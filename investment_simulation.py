@@ -359,6 +359,156 @@ def create_visualizations(
     print(f"Графіки збережено в: {output_dir}")
 
 
+def calculate_risk_metrics(
+    results: dict,
+    ticker: str,
+    investment_amount: float,
+    start_year: int,
+    end_year: int,
+    risk_free_rate: float = None
+) -> dict:
+    """
+    Розрахувати метрики ризику для портфеля.
+
+    Args:
+        results: Результати симуляції
+        ticker: Тікер акції
+        investment_amount: Сума інвестиції
+        start_year: Початковий рік
+        end_year: Кінцевий рік
+        risk_free_rate: Безризикова ставка (якщо None, використовує середню T-bill ставку)
+
+    Returns:
+        dict з метриками ризику
+    """
+    portfolio_values = np.array(results['portfolio_value'])
+    total_invested = np.array(results['total_invested'])
+    tbill_values = np.array(results['tbill_value'])
+    dates = results['dates']
+
+    # Фільтруємо дні коли є інвестиції (portfolio > 0)
+    mask = portfolio_values > 0
+    portfolio_values = portfolio_values[mask]
+    total_invested = total_invested[mask]
+    tbill_values = tbill_values[mask]
+
+    if len(portfolio_values) < 2:
+        return {}
+
+    # Денні дохідності портфеля
+    daily_returns = np.diff(portfolio_values) / portfolio_values[:-1]
+    daily_returns = daily_returns[~np.isnan(daily_returns) & ~np.isinf(daily_returns)]
+
+    if len(daily_returns) < 10:
+        return {}
+
+    # Безризикова ставка (середня денна)
+    if risk_free_rate is None:
+        # Приблизна середня T-bill ставка за період
+        if len(tbill_values) > 1 and total_invested[-1] > 0:
+            tbill_total_return = (tbill_values[-1] - total_invested[-1]) / total_invested[-1]
+            years = (end_year - start_year) + 1
+            risk_free_rate = tbill_total_return / years
+        else:
+            risk_free_rate = 0.02  # За замовчуванням 2%
+    daily_rf = risk_free_rate / 252  # Приблизно 252 торгові дні на рік
+
+    # === МЕТРИКИ ===
+
+    # 1. Волатильність (річна)
+    daily_volatility = np.std(daily_returns)
+    annual_volatility = daily_volatility * np.sqrt(252)
+
+    # 2. Середня денна дохідність
+    mean_daily_return = np.mean(daily_returns)
+    annual_return = mean_daily_return * 252
+
+    # 3. Sharpe Ratio (річний)
+    excess_return = mean_daily_return - daily_rf
+    sharpe_ratio = (excess_return / daily_volatility) * np.sqrt(252) if daily_volatility > 0 else 0
+
+    # 4. Sortino Ratio (враховує тільки негативну волатильність)
+    negative_returns = daily_returns[daily_returns < 0]
+    downside_deviation = np.std(negative_returns) if len(negative_returns) > 0 else 0
+    sortino_ratio = (excess_return / downside_deviation) * np.sqrt(252) if downside_deviation > 0 else 0
+
+    # 5. Maximum Drawdown
+    peak = np.maximum.accumulate(portfolio_values)
+    drawdown = (portfolio_values - peak) / peak
+    max_drawdown = np.min(drawdown)
+
+    # 6. CAGR (Compound Annual Growth Rate)
+    years = (end_year - start_year) + 1
+    if total_invested[-1] > 0:
+        total_return = portfolio_values[-1] / total_invested[-1]
+        cagr = (total_return ** (1 / years)) - 1
+    else:
+        cagr = 0
+
+    # 7. Win Rate (відсоток днів з позитивною дохідністю)
+    win_rate = np.sum(daily_returns > 0) / len(daily_returns) * 100
+
+    # 8. Calmar Ratio (CAGR / |Max Drawdown|)
+    calmar_ratio = cagr / abs(max_drawdown) if max_drawdown != 0 else 0
+
+    # 9. Найдовший період збитків (в днях)
+    cumulative_returns = np.cumprod(1 + daily_returns)
+    running_max = np.maximum.accumulate(cumulative_returns)
+    underwater = cumulative_returns < running_max
+
+    max_underwater_period = 0
+    current_period = 0
+    for is_underwater in underwater:
+        if is_underwater:
+            current_period += 1
+            max_underwater_period = max(max_underwater_period, current_period)
+        else:
+            current_period = 0
+
+    metrics = {
+        'ticker': ticker,
+        'start_year': start_year,
+        'end_year': end_year,
+        'investment_amount': investment_amount,
+        'total_invested': total_invested[-1],
+        'final_value': portfolio_values[-1],
+        'total_return_pct': ((portfolio_values[-1] / total_invested[-1]) - 1) * 100,
+        'cagr_pct': cagr * 100,
+        'annual_volatility_pct': annual_volatility * 100,
+        'sharpe_ratio': sharpe_ratio,
+        'sortino_ratio': sortino_ratio,
+        'max_drawdown_pct': max_drawdown * 100,
+        'calmar_ratio': calmar_ratio,
+        'win_rate_pct': win_rate,
+        'max_underwater_days': max_underwater_period,
+        'risk_free_rate_pct': risk_free_rate * 100,
+    }
+
+    return metrics
+
+
+def print_risk_metrics(metrics: dict):
+    """Вивести метрики ризику."""
+    if not metrics:
+        print("Недостатньо даних для розрахунку метрик ризику")
+        return
+
+    print("\n" + "=" * 65)
+    print("МЕТРИКИ РИЗИКУ")
+    print("=" * 65)
+    print(f"Sharpe Ratio:         {metrics['sharpe_ratio']:.2f}")
+    print(f"Sortino Ratio:        {metrics['sortino_ratio']:.2f}")
+    print(f"Calmar Ratio:         {metrics['calmar_ratio']:.2f}")
+    print("-" * 65)
+    print(f"CAGR:                 {metrics['cagr_pct']:.2f}%")
+    print(f"Річна волатильність:  {metrics['annual_volatility_pct']:.2f}%")
+    print(f"Max Drawdown:         {metrics['max_drawdown_pct']:.2f}%")
+    print("-" * 65)
+    print(f"Win Rate:             {metrics['win_rate_pct']:.1f}%")
+    print(f"Max період збитків:   {metrics['max_underwater_days']} днів")
+    print("=" * 65)
+
+
 def print_summary(results: dict, ticker: str, investment_amount: float):
     """Вивести підсумок симуляції."""
     final_idx = -1
@@ -544,6 +694,16 @@ def main():
     # Підсумок
     print_summary(results, args.ticker, args.amount)
 
+    # Метрики ризику
+    metrics = calculate_risk_metrics(
+        results=results,
+        ticker=args.ticker,
+        investment_amount=args.amount,
+        start_year=args.start,
+        end_year=args.end
+    )
+    print_risk_metrics(metrics)
+
     # Зберігаємо дані в CSV
     df = pd.DataFrame({
         'date': results['dates'],
@@ -562,6 +722,12 @@ def main():
     })
     df.to_csv(output_dir / 'simulation_data.csv', index=False)
     print(f"\nДані збережено в: {output_dir / 'simulation_data.csv'}")
+
+    # Зберігаємо метрики в окремий CSV
+    if metrics:
+        metrics_df = pd.DataFrame([metrics])
+        metrics_df.to_csv(output_dir / 'metrics.csv', index=False)
+        print(f"Метрики збережено в: {output_dir / 'metrics.csv'}")
 
 
 if __name__ == '__main__':
