@@ -117,9 +117,10 @@ def simulate_investment(
         'portfolio_profit_pct': [],
         'tbill_value': [],
         'tbill_profit': [],
-        # Значення скориговані на інфляцію
+        # Значення скориговані на інфляцію (в "початкових доларах")
+        # total_invested_real = купівельна спроможність готівки (якби не інвестували)
         'portfolio_value_real': [],
-        'total_invested_real': [],
+        'total_invested_real': [],  # "готівка реальна" - втрачає вартість через інфляцію
         'portfolio_profit_real': [],
         'tbill_value_real': [],
         'tbill_profit_real': [],
@@ -129,8 +130,9 @@ def simulate_investment(
     total_invested = 0.0
     tbill_balance = 0.0
 
-    # Базовий CPI для розрахунку реальних значень (на кінець періоду)
-    base_cpi = cpi_data.iloc[-1]
+    # Базовий CPI для розрахунку реальних значень (на ПОЧАТОК періоду)
+    # Це дозволяє виразити все в "початкових доларах" - тобто купівельній спроможності на момент старту
+    base_cpi = cpi_data.iloc[0]
 
     # Отримуємо ціни закриття
     prices = stock_data['Close']
@@ -177,11 +179,14 @@ def simulate_investment(
 
         tbill_profit = tbill_balance - total_invested
 
-        # Корекція на інфляцію
-        if date in cpi_data.index:
-            cpi_current = cpi_data.loc[date]
-            inflation_factor = base_cpi / cpi_current
-        else:
+        # Корекція на інфляцію (використовуємо asof для пошуку найближчого CPI)
+        try:
+            cpi_current = cpi_data.asof(date)
+            if pd.notna(cpi_current) and cpi_current > 0:
+                inflation_factor = base_cpi / cpi_current
+            else:
+                inflation_factor = 1.0
+        except Exception:
             inflation_factor = 1.0
 
         # Записуємо результати
@@ -235,12 +240,13 @@ def create_visualizations(
     plt.savefig(output_dir / '1_stock_price.png', dpi=150)
     plt.close()
 
-    # 2. Розмір портфеля (номінальний vs реальний)
+    # 2. Розмір портфеля (номінальний vs реальний vs готівка)
     fig, ax = plt.subplots(figsize=fig_size)
     ax.plot(dates, results['portfolio_value'], 'b-', linewidth=1.5, label='Портфель (номінальний)')
-    ax.plot(dates, results['portfolio_value_real'], 'g-', linewidth=1.5, label='Портфель (реальний, скоригований на інфляцію)')
-    ax.plot(dates, results['total_invested'], 'r--', linewidth=1.5, label='Інвестовано')
-    ax.set_title(f'Вартість портфеля {ticker} ({start_year}-{end_year})', fontsize=14)
+    ax.plot(dates, results['portfolio_value_real'], 'g-', linewidth=1.5, label='Портфель (реальний)')
+    ax.plot(dates, results['total_invested'], 'r--', linewidth=1.5, label='Інвестовано (номінально)')
+    ax.plot(dates, results['total_invested_real'], 'r-', linewidth=1.5, alpha=0.7, label='Готівка (реальна купівельна спроможність)')
+    ax.set_title(f'Вартість портфеля {ticker} ({start_year}-{end_year})\n(все в "початкових доларах")', fontsize=14)
     ax.set_xlabel('Дата')
     ax.set_ylabel('Вартість ($)')
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
@@ -317,9 +323,10 @@ def create_visualizations(
     axes[0, 1].plot(dates, results['portfolio_value'], 'b-', linewidth=1, label='Номінальна')
     axes[0, 1].plot(dates, results['portfolio_value_real'], 'g-', linewidth=1, label='Реальна')
     axes[0, 1].plot(dates, results['total_invested'], 'r--', linewidth=1, label='Інвестовано')
+    axes[0, 1].plot(dates, results['total_invested_real'], 'r-', linewidth=1, alpha=0.7, label='Готівка (реальна)')
     axes[0, 1].set_title('Вартість портфеля')
     axes[0, 1].set_ylabel('Вартість ($)')
-    axes[0, 1].legend(fontsize=8)
+    axes[0, 1].legend(fontsize=7)
 
     # Прибуток %
     axes[1, 0].plot(dates, results['portfolio_profit_pct'], 'b-', linewidth=1)
@@ -357,6 +364,7 @@ def print_summary(results: dict, ticker: str, investment_amount: float):
     final_idx = -1
 
     total_invested = results['total_invested'][final_idx]
+    total_invested_real = results['total_invested_real'][final_idx]  # Готівка (реальна)
     portfolio_value = results['portfolio_value'][final_idx]
     portfolio_profit = results['portfolio_profit'][final_idx]
     portfolio_profit_pct = results['portfolio_profit_pct'][final_idx]
@@ -371,30 +379,38 @@ def print_summary(results: dict, ticker: str, investment_amount: float):
 
     shares = results['shares_owned'][final_idx]
 
-    print("\n" + "=" * 60)
+    # Втрати від інфляції якби тримали готівку
+    cash_inflation_loss = total_invested - total_invested_real
+    cash_inflation_loss_pct = (cash_inflation_loss / total_invested * 100) if total_invested > 0 else 0
+
+    print("\n" + "=" * 65)
     print("ПІДСУМОК СИМУЛЯЦІЇ")
-    print("=" * 60)
+    print("=" * 65)
     print(f"Тікер: {ticker}")
     print(f"Сума інвестиції: ${investment_amount} кожні 2 тижні")
     print(f"Кількість покупок: {int(total_invested / investment_amount)}")
     print(f"Акцій у портфелі: {shares:.4f}")
-    print("-" * 60)
+    print("-" * 65)
     print("НОМІНАЛЬНІ ЗНАЧЕННЯ:")
     print(f"  Всього інвестовано: ${total_invested:,.2f}")
     print(f"  Вартість портфеля:  ${portfolio_value:,.2f}")
     print(f"  Прибуток:           ${portfolio_profit:,.2f} ({portfolio_profit_pct:.2f}%)")
-    print("-" * 60)
-    print("РЕАЛЬНІ ЗНАЧЕННЯ (скориговані на інфляцію):")
+    print("-" * 65)
+    print("РЕАЛЬНІ ЗНАЧЕННЯ (в 'початкових доларах'):")
     print(f"  Вартість портфеля:  ${portfolio_value_real:,.2f}")
     print(f"  Реальний прибуток:  ${portfolio_profit_real:,.2f}")
-    print("-" * 60)
+    print("-" * 65)
+    print("ПОРІВНЯННЯ З ГОТІВКОЮ (якби не інвестували):")
+    print(f"  Готівка номінально: ${total_invested:,.2f}")
+    print(f"  Готівка реально:    ${total_invested_real:,.2f} (купівельна спроможність)")
+    print(f"  Втрати від інфляції: ${cash_inflation_loss:,.2f} ({cash_inflation_loss_pct:.1f}%)")
+    print(f"  Перевага портфеля:  ${portfolio_value_real - total_invested_real:,.2f} (реальна)")
+    print("-" * 65)
     print("ПОРІВНЯННЯ З T-BILLS:")
     print(f"  T-bills вартість:   ${tbill_value:,.2f} (номінальна)")
-    print(f"  T-bills прибуток:   ${tbill_profit:,.2f}")
-    print(f"  T-bills реальний:   ${tbill_value_real:,.2f}")
-    print(f"  Перевага акцій:     ${portfolio_profit - tbill_profit:,.2f} (номінальна)")
-    print(f"  Перевага акцій:     ${portfolio_profit_real - tbill_profit_real:,.2f} (реальна)")
-    print("=" * 60)
+    print(f"  T-bills реально:    ${tbill_value_real:,.2f}")
+    print(f"  Перевага акцій:     ${portfolio_value_real - tbill_value_real:,.2f} (реальна)")
+    print("=" * 65)
 
 
 def main():
