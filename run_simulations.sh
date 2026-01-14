@@ -12,7 +12,17 @@
 START_YEAR=2022
 END_YEAR=2025
 AMOUNT=500
-TICKERS="GSPC BTC-USD"
+
+# Тікери за замовчуванням:
+#   GSPC     - S&P 500
+#   DJI      - Dow Jones Industrial Average
+#   IXIC     - Nasdaq Composite
+#   XLV      - Health Care Select Sector SPDR (медицина США)
+#   EZU      - iShares MSCI Eurozone ETF (Євросоюз)
+#   BTC-USD  - Bitcoin
+#   ETH-USD  - Ethereum
+#   SOL-USD  - Solana
+TICKERS="GSPC DJI IXIC XLV EZU BTC-USD ETH-USD SOL-USD"
 
 # === ПАРСИНГ АРГУМЕНТІВ ===
 while getopts "s:e:a:t:h" opt; do
