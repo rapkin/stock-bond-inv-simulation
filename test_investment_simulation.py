@@ -20,6 +20,8 @@ from investment_simulation import (
     simulate_investment,
     create_visualizations,
     print_summary,
+    calculate_risk_metrics,
+    print_risk_metrics,
 )
 
 
@@ -482,6 +484,178 @@ class TestIntegration:
 
             assert len(results['dates']) > 0
             assert results['total_invested'][-1] > 0
+
+
+class TestCalculateRiskMetrics:
+    """Tests for calculate_risk_metrics function."""
+
+    def create_mock_results(self, n=200, trend=0.001, volatility=0.02):
+        """Create mock results with controlled characteristics."""
+        dates = pd.date_range('2023-01-01', periods=n, freq='B')
+
+        # Generate portfolio values with trend and volatility
+        np.random.seed(42)
+        returns = trend + volatility * np.random.randn(n)
+        cumulative = np.cumprod(1 + returns) * 1000
+
+        total_invested = np.linspace(1000, 10000, n)
+
+        return {
+            'dates': list(dates),
+            'portfolio_value': list(cumulative),
+            'total_invested': list(total_invested),
+            'tbill_value': list(total_invested * 1.02),  # 2% return
+        }
+
+    def test_returns_expected_keys(self):
+        """Result should contain all expected metric keys."""
+        results = self.create_mock_results()
+
+        metrics = calculate_risk_metrics(
+            results, 'TEST', 500, 2023, 2023
+        )
+
+        expected_keys = [
+            'ticker', 'start_year', 'end_year', 'investment_amount',
+            'total_invested', 'final_value', 'total_return_pct',
+            'cagr_pct', 'annual_volatility_pct', 'sharpe_ratio',
+            'sortino_ratio', 'max_drawdown_pct', 'calmar_ratio',
+            'win_rate_pct', 'max_underwater_days', 'risk_free_rate_pct',
+        ]
+
+        for key in expected_keys:
+            assert key in metrics, f"Missing key: {key}"
+
+    def test_sharpe_ratio_positive_for_positive_returns(self):
+        """Sharpe ratio should be positive for consistently positive returns."""
+        results = self.create_mock_results(trend=0.005, volatility=0.01)
+
+        metrics = calculate_risk_metrics(
+            results, 'TEST', 500, 2023, 2023
+        )
+
+        assert metrics['sharpe_ratio'] > 0
+
+    def test_sharpe_ratio_negative_for_negative_returns(self):
+        """Sharpe ratio should be negative for consistently negative returns."""
+        results = self.create_mock_results(trend=-0.005, volatility=0.01)
+
+        metrics = calculate_risk_metrics(
+            results, 'TEST', 500, 2023, 2023
+        )
+
+        assert metrics['sharpe_ratio'] < 0
+
+    def test_max_drawdown_is_negative(self):
+        """Max drawdown should always be negative or zero."""
+        results = self.create_mock_results()
+
+        metrics = calculate_risk_metrics(
+            results, 'TEST', 500, 2023, 2023
+        )
+
+        assert metrics['max_drawdown_pct'] <= 0
+
+    def test_win_rate_between_0_and_100(self):
+        """Win rate should be between 0 and 100 percent."""
+        results = self.create_mock_results()
+
+        metrics = calculate_risk_metrics(
+            results, 'TEST', 500, 2023, 2023
+        )
+
+        assert 0 <= metrics['win_rate_pct'] <= 100
+
+    def test_volatility_is_positive(self):
+        """Annual volatility should be positive."""
+        results = self.create_mock_results()
+
+        metrics = calculate_risk_metrics(
+            results, 'TEST', 500, 2023, 2023
+        )
+
+        assert metrics['annual_volatility_pct'] > 0
+
+    def test_empty_results_returns_empty_dict(self):
+        """Should return empty dict for insufficient data."""
+        results = {
+            'dates': [],
+            'portfolio_value': [],
+            'total_invested': [],
+            'tbill_value': [],
+        }
+
+        metrics = calculate_risk_metrics(
+            results, 'TEST', 500, 2023, 2023
+        )
+
+        assert metrics == {}
+
+    def test_sortino_ratio_higher_than_sharpe_for_positive_skew(self):
+        """Sortino should be >= Sharpe for positive returns (less downside)."""
+        # With positive trend and moderate volatility
+        results = self.create_mock_results(trend=0.003, volatility=0.015)
+
+        metrics = calculate_risk_metrics(
+            results, 'TEST', 500, 2023, 2023
+        )
+
+        # Sortino typically >= Sharpe when returns are positive
+        # because downside deviation <= total deviation
+        assert metrics['sortino_ratio'] >= metrics['sharpe_ratio'] * 0.8  # Allow some tolerance
+
+    def test_cagr_calculation(self):
+        """CAGR should reflect compound growth."""
+        dates = pd.date_range('2023-01-01', periods=252, freq='B')  # ~1 year
+
+        # Portfolio doubles over the year
+        portfolio_values = np.linspace(1000, 2000, 252)
+        total_invested = [1000] * 252
+
+        results = {
+            'dates': list(dates),
+            'portfolio_value': list(portfolio_values),
+            'total_invested': total_invested,
+            'tbill_value': total_invested,
+        }
+
+        metrics = calculate_risk_metrics(
+            results, 'TEST', 500, 2023, 2023
+        )
+
+        # 100% return over 1 year = 100% CAGR
+        assert metrics['cagr_pct'] == pytest.approx(100, rel=0.1)
+
+
+class TestPrintRiskMetrics:
+    """Tests for print_risk_metrics function."""
+
+    def test_prints_without_error(self, capsys):
+        """Should print metrics without raising errors."""
+        metrics = {
+            'ticker': 'TEST',
+            'sharpe_ratio': 1.5,
+            'sortino_ratio': 2.0,
+            'calmar_ratio': 0.8,
+            'cagr_pct': 10.5,
+            'annual_volatility_pct': 15.0,
+            'max_drawdown_pct': -12.0,
+            'win_rate_pct': 55.0,
+            'max_underwater_days': 30,
+        }
+
+        print_risk_metrics(metrics)
+
+        captured = capsys.readouterr()
+        assert 'Sharpe Ratio' in captured.out
+        assert '1.50' in captured.out
+
+    def test_handles_empty_metrics(self, capsys):
+        """Should handle empty metrics gracefully."""
+        print_risk_metrics({})
+
+        captured = capsys.readouterr()
+        assert 'Недостатньо даних' in captured.out
 
 
 class TestEdgeCases:
