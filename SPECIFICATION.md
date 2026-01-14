@@ -29,21 +29,30 @@
   portfolio_profit = portfolio_value - total_invested
   portfolio_profit_pct = (portfolio_profit / total_invested) × 100
 
-Реальні значення (скориговані на інфляцію):
-  inflation_factor = CPI_end / CPI_current
+Реальні значення (в "початкових доларах" - купівельна спроможність на момент старту):
+  base_cpi = CPI на ПОЧАТОК періоду
+  inflation_factor = base_cpi / CPI_current  (< 1 при інфляції)
+
   portfolio_value_real = portfolio_value × inflation_factor
+  total_invested_real = total_invested × inflation_factor  (= "готівка реальна")
+
+Порівняння з готівкою:
+  cash_inflation_loss = total_invested - total_invested_real
+  Показує скільки купівельної спроможності втрачено через інфляцію
 ```
+
+**Інтерпретація:** Якщо `total_invested_real < total_invested`, це означає, що готівка втратила купівельну спроможність через інфляцію. Різниця показує "невидимі" втрати від тримання грошей без інвестування.
 
 ### 4. Візуалізації
 
 | # | Графік | Опис |
 |---|--------|------|
 | 1 | Ціна акції | Історична ціна тікера |
-| 2 | Вартість портфеля | Номінальна vs реальна вартість + інвестовано |
+| 2 | Вартість портфеля | Номінальна vs реальна вартість + готівка (реальна купівельна спроможність) |
 | 3 | Прибутки портфеля | Номінальний vs реальний прибуток з зонами прибутку/збитку |
 | 4 | Акції vs T-bills | Порівняння вартості портфелів |
 | 5 | Реальні прибутки | Порівняння реальних прибутків акцій та T-bills |
-| 6 | Дашборд | Зведена панель з 4 графіками |
+| 6 | Дашборд | Зведена панель з 4 графіками (включає порівняння з готівкою) |
 
 ### 5. Вихідні дані
 
@@ -59,6 +68,13 @@
 
 ```bash
 cd stock-bond-inv-simulation
+
+# Створення віртуального оточення
+python3 -m venv venv
+source venv/bin/activate  # Linux/macOS
+# або: venv\Scripts\activate  # Windows
+
+# Встановлення залежностей
 pip install -r requirements.txt
 ```
 

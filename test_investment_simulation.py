@@ -306,8 +306,38 @@ class TestSimulateInvestment:
         )
 
         # Real values should be adjusted (different from nominal at the end)
-        # With inflation, real values should be higher than nominal at start
-        assert result['portfolio_value_real'][0] > result['portfolio_value'][0]
+        # With base_cpi at start: at end, real values should be LOWER than nominal
+        # because inflation reduces purchasing power
+        assert result['portfolio_value_real'][-1] < result['portfolio_value'][-1]
+
+        # At start (first purchase), real and nominal should be approximately equal
+        # (inflation_factor ≈ 1 when cpi_current ≈ base_cpi)
+        first_purchase_idx = 0
+        assert result['portfolio_value_real'][first_purchase_idx] == pytest.approx(
+            result['portfolio_value'][first_purchase_idx], rel=0.01
+        )
+
+    def test_cash_purchasing_power_decreases_with_inflation(self):
+        """Cash (total_invested_real) should decrease relative to nominal with inflation."""
+        dates = pd.date_range('2023-01-01', periods=100, freq='B')
+        stock_data = pd.DataFrame({'Close': [100] * 100}, index=dates)
+
+        # 50% CPI increase over period (significant inflation)
+        cpi_data = pd.Series(100 + np.arange(100) * 0.5, index=dates)
+        tbill_rates = pd.Series(0.0, index=dates)
+
+        result = simulate_investment(
+            stock_data, [dates[0], dates[14], dates[28]], 1000, cpi_data, tbill_rates
+        )
+
+        # At the end, cash purchasing power should be less than nominal
+        # because inflation erodes the value of money
+        assert result['total_invested_real'][-1] < result['total_invested'][-1]
+
+        # The loss should be proportional to inflation
+        inflation_rate = cpi_data.iloc[-1] / cpi_data.iloc[0]
+        expected_real = result['total_invested'][-1] / inflation_rate
+        assert result['total_invested_real'][-1] == pytest.approx(expected_real, rel=0.1)
 
 
 class TestCreateVisualizations:
