@@ -9,20 +9,30 @@
 #
 
 # === ПАРАМЕТРИ ЗА ЗАМОВЧУВАННЯМ ===
-START_YEAR=2022
+START_YEAR=2020
 END_YEAR=2025
 AMOUNT=500
 
 # Тікери за замовчуванням:
-#   GSPC     - S&P 500
-#   DJI      - Dow Jones Industrial Average
-#   IXIC     - Nasdaq Composite
-#   XLV      - Health Care Select Sector SPDR (медицина США)
-#   EZU      - iShares MSCI Eurozone ETF (Євросоюз)
-#   BTC-USD  - Bitcoin
-#   ETH-USD  - Ethereum
-#   SOL-USD  - Solana
-TICKERS="GSPC DJI IXIC XLV EZU BTC-USD ETH-USD SOL-USD"
+#   Індекси:
+#     GSPC     - S&P 500
+#     DJI      - Dow Jones Industrial Average
+#     IXIC     - Nasdaq Composite
+#     QQQ      - Invesco QQQ (Nasdaq 100)
+#   Регіони:
+#     EZU      - iShares MSCI Eurozone ETF (Євросоюз)
+#     EEM      - iShares MSCI Emerging Markets (країни що розвиваються)
+#   Облігації:
+#     TLT      - iShares 20+ Year Treasury Bond (довгострокові облігації)
+#   Commodities:
+#     GLD      - SPDR Gold Shares (золото)
+#   Нерухомість:
+#     VNQ      - Vanguard Real Estate (REITs)
+#   Криптовалюти:
+#     BTC-USD  - Bitcoin
+#     ETH-USD  - Ethereum
+#     SOL-USD  - Solana
+TICKERS="GSPC DJI IXIC QQQ EZU EEM TLT GLD VNQ BTC-USD ETH-USD SOL-USD"
 
 # === ПАРСИНГ АРГУМЕНТІВ ===
 while getopts "s:e:a:t:h" opt; do
