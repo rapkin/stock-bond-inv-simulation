@@ -123,6 +123,25 @@ echo "========================================"
 
 python "$SCRIPT_DIR/aggregate_results.py"
 
+# === ОПТИМІЗАЦІЯ ПОРТФЕЛЯ ===
+echo ""
+echo "========================================"
+echo "Оптимізація портфеля..."
+echo "========================================"
+
+python "$SCRIPT_DIR/optimize_portfolio.py" \
+    --start "$START_YEAR" \
+    --end "$END_YEAR" \
+    --amount "$AMOUNT"
+
+# === ГЕНЕРАЦІЯ ЗВІТУ ===
+echo ""
+echo "========================================"
+echo "Генерація HTML звіту..."
+echo "========================================"
+
+python "$SCRIPT_DIR/generate_report.py"
+
 # === ПІДСУМОК ===
 echo ""
 echo "========================================"
@@ -130,8 +149,12 @@ echo "ЗАВЕРШЕНО"
 echo "========================================"
 echo "Успішно: $SUCCESSFUL"
 echo "Помилок: $FAILED"
-echo "Результати: $SCRIPT_DIR/simulation_results/"
-echo "Порівняння: $SCRIPT_DIR/simulation_results/comparison.csv"
+echo ""
+echo "Результати:"
+echo "  Симуляції:  $SCRIPT_DIR/simulation_results/"
+echo "  Порівняння: $SCRIPT_DIR/simulation_results/comparison.csv"
+echo "  Портфель:   $SCRIPT_DIR/simulation_results/portfolio_results.csv"
+echo "  Звіт:       $SCRIPT_DIR/simulation_results/report.html"
 echo "========================================"
 
 # Деактивація віртуального оточення

@@ -51,24 +51,39 @@ def calculate_risk_reward_score(df: pd.DataFrame) -> pd.Series:
     """
     Розрахувати комбіновану метрику Risk-Reward Score.
 
-    Score = Sortino × (1 - |max_drawdown|/100) × ln(1 + total_return/100)
+    Score = Sortino × sqrt(1 - |MaxDD|/100) × sqrt(Return/100) × suspicion_penalty
 
     Враховує:
     - Sortino Ratio: дохідність відносно негативної волатильності
-    - Штраф за великі просадки (max drawdown)
-    - Логарифм прибутку (зменшує вплив екстремальних значень)
+    - sqrt для MaxDD: м'якший штраф за просадки
+    - sqrt для Return: менше згладжування ніж log
+    - Suspicion penalty: штраф для "занадто ідеальних" активів
     """
     sortino = df['sortino_ratio'].fillna(0)
     max_dd = df['max_drawdown_pct'].abs().fillna(100)
     total_return = df['total_return_pct'].fillna(0)
 
-    # Drawdown penalty: 0% DD = 1.0, 50% DD = 0.5, 100% DD = 0.0
-    dd_factor = 1 - (max_dd / 100)
+    # Drawdown factor: sqrt робить штраф м'якшим
+    # 0% DD = 1.0, 25% DD = 0.87, 50% DD = 0.71, 75% DD = 0.50, 100% DD = 0.0
+    dd_factor = np.sqrt(1 - (max_dd / 100).clip(upper=1))
 
-    # Log return factor: 0% = 0, 100% = 0.69, 1000% = 2.4
-    return_factor = np.log1p(total_return.clip(lower=0) / 100)
+    # Return factor: sqrt замість log для меншого згладжування
+    # 100% = 1.0, 400% = 2.0, 1600% = 4.0
+    return_factor = np.sqrt(total_return.clip(lower=0) / 100)
 
-    score = sortino * dd_factor * return_factor
+    # Suspicion penalty: штраф для "занадто добрих" результатів
+    # Якщо Sortino > 7 або MaxDD < 15% - може бути аномалія
+    suspicion = np.ones(len(df))
+
+    # Штраф за занадто високий Sortino (> 7)
+    high_sortino = sortino > 7
+    suspicion[high_sortino] *= 0.7
+
+    # Штраф за занадто низький MaxDD (< 15%) при високому return (> 50%)
+    low_dd_high_return = (max_dd < 15) & (total_return > 50)
+    suspicion[low_dd_high_return] *= 0.7
+
+    score = sortino * dd_factor * return_factor * suspicion
 
     return score
 
@@ -136,7 +151,7 @@ def print_comparison_table(df: pd.DataFrame):
               f"Return: {best['total_return_pct']:.1f}%, "
               f"Sortino: {best['sortino_ratio']:.2f}, "
               f"Max DD: {best['max_drawdown_pct']:.1f}%")
-        print(f"\n📊 Risk-Reward Score = Sortino × (1 - |MaxDD|/100) × ln(1 + Return/100)")
+        print(f"\n📊 Risk-Reward Score = Sortino × √(1-|MaxDD|/100) × √(Return/100) × suspicion_penalty")
 
 
 def main():
