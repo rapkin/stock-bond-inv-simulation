@@ -19,6 +19,94 @@ import yfinance as yf
 from pandas_datareader import data as pdr
 
 
+# === КЕШУВАННЯ (по роках) ===
+
+CACHE_DIR = Path(__file__).parent / 'cache'
+
+
+def get_yearly_cache_path(data_type: str, identifier: str, year: int) -> Path:
+    """Отримати шлях до файлу кешу для конкретного року."""
+    filename = f"{data_type}_{identifier}_{year}.pkl"
+    return CACHE_DIR / filename
+
+
+def is_year_cache_valid(year: int) -> bool:
+    """Перевірити чи кеш для року валідний (рік вже закінчився)."""
+    return year < datetime.now().year
+
+
+def save_year_to_cache(data: pd.DataFrame | pd.Series, cache_path: Path):
+    """Зберегти дані року в кеш."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    data.to_pickle(cache_path)
+
+
+def load_year_from_cache(cache_path: Path) -> pd.DataFrame | pd.Series:
+    """Завантажити дані року з кешу."""
+    return pd.read_pickle(cache_path)
+
+
+def load_cached_data(
+    data_type: str,
+    identifier: str,
+    start_year: int,
+    end_year: int,
+    fetch_func
+) -> pd.DataFrame | pd.Series:
+    """
+    Завантажити дані з кешу по роках, довантажуючи відсутні.
+
+    Args:
+        data_type: Тип даних (stock, cpi, tbill)
+        identifier: Ідентифікатор (тікер або назва індексу)
+        start_year: Початковий рік
+        end_year: Кінцевий рік
+        fetch_func: Функція для завантаження даних за період (start_date, end_date) -> data
+
+    Returns:
+        Об'єднані дані за весь період
+    """
+    all_data = []
+    years_from_cache = []
+    years_from_network = []
+
+    for year in range(start_year, end_year + 1):
+        cache_path = get_yearly_cache_path(data_type, identifier, year)
+
+        if cache_path.exists() and is_year_cache_valid(year):
+            # Завантажуємо з кешу
+            data = load_year_from_cache(cache_path)
+            all_data.append(data)
+            years_from_cache.append(year)
+        else:
+            # Завантажуємо з мережі
+            year_start = f"{year}-01-01"
+            year_end = f"{year}-12-31"
+
+            data = fetch_func(year_start, year_end)
+            all_data.append(data)
+            years_from_network.append(year)
+
+            # Кешуємо якщо рік вже закінчився
+            if is_year_cache_valid(year):
+                save_year_to_cache(data, cache_path)
+
+    # Логування
+    if years_from_cache:
+        print(f"  (з кешу: {min(years_from_cache)}-{max(years_from_cache)})")
+    if years_from_network:
+        print(f"  (з мережі: {min(years_from_network)}-{max(years_from_network)})")
+
+    # Об'єднуємо дані
+    if not all_data:
+        return pd.DataFrame() if data_type == 'stock' else pd.Series(dtype=float)
+
+    if isinstance(all_data[0], pd.DataFrame):
+        return pd.concat(all_data).sort_index()
+    else:
+        return pd.concat(all_data).sort_index()
+
+
 def get_biweekly_fridays(start_date: datetime, end_date: datetime) -> list[datetime]:
     """Отримати список кожної другої п'ятниці в заданому діапазоні."""
     fridays = []
@@ -37,61 +125,86 @@ def get_biweekly_fridays(start_date: datetime, end_date: datetime) -> list[datet
 
 
 def download_stock_data(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """Завантажити історичні дані акцій."""
-    print(f"Завантаження даних для {ticker}...")
-
-    # Для індексів додаємо ^ якщо потрібно
+    """Завантажити історичні дані акцій (з кешуванням по роках)."""
+    # Нормалізуємо тікер для Yahoo Finance
+    original_ticker = ticker
+    yf_ticker = ticker
     if ticker.upper() in ['GSPC', 'SPX', 'SP500']:
-        ticker = '^GSPC'
+        yf_ticker = '^GSPC'
     elif ticker.upper() == 'DJI':
-        ticker = '^DJI'
+        yf_ticker = '^DJI'
     elif ticker.upper() == 'IXIC':
-        ticker = '^IXIC'
+        yf_ticker = '^IXIC'
 
-    data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+    # Ідентифікатор для кешу (без ^)
+    cache_id = ticker.upper().replace('^', '').replace('-', '_')
+
+    start_year = int(start_date[:4])
+    end_year = int(end_date[:4])
+
+    print(f"Завантаження даних для {original_ticker}...")
+
+    def fetch_year(year_start: str, year_end: str) -> pd.DataFrame:
+        """Завантажити дані з Yahoo Finance за період."""
+        data = yf.download(yf_ticker, start=year_start, end=year_end, progress=False)
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        return data
+
+    data = load_cached_data('stock', cache_id, start_year, end_year, fetch_year)
 
     if data.empty:
         raise ValueError(f"Не вдалося завантажити дані для {ticker}")
-
-    # Якщо є MultiIndex колонки, спрощуємо
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
 
     return data
 
 
 def download_inflation_data(start_date: str, end_date: str) -> pd.Series:
-    """Завантажити дані CPI (Consumer Price Index) з FRED."""
+    """Завантажити дані CPI (Consumer Price Index) з FRED (з кешуванням по роках)."""
+    start_year = int(start_date[:4])
+    end_year = int(end_date[:4])
+
     print("Завантаження даних інфляції (CPI)...")
-    try:
-        cpi = pdr.DataReader('CPIAUCSL', 'fred', start_date, end_date)
-        # Інтерполяція місячних даних до денних
-        cpi = cpi.resample('D').interpolate(method='linear')
-        return cpi['CPIAUCSL']
-    except Exception as e:
-        print(f"Помилка завантаження CPI: {e}")
-        print("Використовую приблизну інфляцію 3% річних...")
-        dates = pd.date_range(start=start_date, end=end_date, freq='D')
-        # Генеруємо синтетичний CPI з ~3% річної інфляції
-        days = (dates - dates[0]).days
-        cpi_values = 100 * (1.03 ** (days / 365))
-        return pd.Series(cpi_values, index=dates)
+
+    def fetch_year(year_start: str, year_end: str) -> pd.Series:
+        """Завантажити CPI з FRED за період."""
+        try:
+            cpi = pdr.DataReader('CPIAUCSL', 'fred', year_start, year_end)
+            # Інтерполяція місячних даних до денних
+            cpi = cpi.resample('D').interpolate(method='linear')
+            return cpi['CPIAUCSL']
+        except Exception as e:
+            print(f"  Помилка завантаження CPI для {year_start[:4]}: {e}")
+            # Генеруємо синтетичний CPI з ~3% річної інфляції
+            dates = pd.date_range(start=year_start, end=year_end, freq='D')
+            days = (dates - dates[0]).days
+            cpi_values = 100 * (1.03 ** (days / 365))
+            return pd.Series(cpi_values, index=dates)
+
+    return load_cached_data('cpi', 'CPIAUCSL', start_year, end_year, fetch_year)
 
 
 def download_tbill_rates(start_date: str, end_date: str) -> pd.Series:
-    """Завантажити ставки 3-місячних T-bills з FRED."""
+    """Завантажити ставки 3-місячних T-bills з FRED (з кешуванням по роках)."""
+    start_year = int(start_date[:4])
+    end_year = int(end_date[:4])
+
     print("Завантаження ставок T-bills...")
-    try:
-        # TB3MS - 3-Month Treasury Bill: Secondary Market Rate
-        tbill = pdr.DataReader('TB3MS', 'fred', start_date, end_date)
-        # Інтерполяція до денних даних
-        tbill = tbill.resample('D').interpolate(method='linear')
-        return tbill['TB3MS'] / 100  # Конвертуємо % в десяткову форму
-    except Exception as e:
-        print(f"Помилка завантаження T-bill rates: {e}")
-        print("Використовую приблизну ставку 2% річних...")
-        dates = pd.date_range(start=start_date, end=end_date, freq='D')
-        return pd.Series(0.02, index=dates)
+
+    def fetch_year(year_start: str, year_end: str) -> pd.Series:
+        """Завантажити T-bill rates з FRED за період."""
+        try:
+            # TB3MS - 3-Month Treasury Bill: Secondary Market Rate
+            tbill = pdr.DataReader('TB3MS', 'fred', year_start, year_end)
+            # Інтерполяція до денних даних
+            tbill = tbill.resample('D').interpolate(method='linear')
+            return tbill['TB3MS'] / 100  # Конвертуємо % в десяткову форму
+        except Exception as e:
+            print(f"  Помилка завантаження T-bill для {year_start[:4]}: {e}")
+            dates = pd.date_range(start=year_start, end=year_end, freq='D')
+            return pd.Series(0.02, index=dates)
+
+    return load_cached_data('tbill', 'TB3MS', start_year, end_year, fetch_year)
 
 
 def simulate_investment(

@@ -101,55 +101,73 @@ class TestGetBiweeklyFridays:
 class TestDownloadStockData:
     """Tests for download_stock_data function."""
 
+    @patch('investment_simulation.load_cached_data')
     @patch('investment_simulation.yf.download')
-    def test_converts_gspc_ticker(self, mock_download):
+    def test_converts_gspc_ticker(self, mock_download, mock_cache):
         """Should convert GSPC to ^GSPC."""
+        # Setup mock to pass through to actual download
+        def cache_side_effect(data_type, identifier, start_year, end_year, fetch_func):
+            return fetch_func('2023-01-01', '2023-12-31')
+
+        mock_cache.side_effect = cache_side_effect
         mock_download.return_value = pd.DataFrame(
             {'Close': [100, 101]},
             index=pd.date_range('2023-01-01', periods=2)
         )
 
-        download_stock_data('GSPC', '2023-01-01', '2023-01-31')
-        mock_download.assert_called_with('^GSPC', start='2023-01-01', end='2023-01-31', progress=False)
+        download_stock_data('GSPC', '2023-01-01', '2023-12-31')
+        mock_download.assert_called_with('^GSPC', start='2023-01-01', end='2023-12-31', progress=False)
 
+    @patch('investment_simulation.load_cached_data')
     @patch('investment_simulation.yf.download')
-    def test_converts_dji_ticker(self, mock_download):
+    def test_converts_dji_ticker(self, mock_download, mock_cache):
         """Should convert DJI to ^DJI."""
+        def cache_side_effect(data_type, identifier, start_year, end_year, fetch_func):
+            return fetch_func('2023-01-01', '2023-12-31')
+
+        mock_cache.side_effect = cache_side_effect
         mock_download.return_value = pd.DataFrame(
             {'Close': [100, 101]},
             index=pd.date_range('2023-01-01', periods=2)
         )
 
-        download_stock_data('DJI', '2023-01-01', '2023-01-31')
-        mock_download.assert_called_with('^DJI', start='2023-01-01', end='2023-01-31', progress=False)
+        download_stock_data('DJI', '2023-01-01', '2023-12-31')
+        mock_download.assert_called_with('^DJI', start='2023-01-01', end='2023-12-31', progress=False)
 
-    @patch('investment_simulation.yf.download')
-    def test_raises_on_empty_data(self, mock_download):
+    @patch('investment_simulation.load_cached_data')
+    def test_raises_on_empty_data(self, mock_cache):
         """Should raise ValueError when no data returned."""
-        mock_download.return_value = pd.DataFrame()
+        mock_cache.return_value = pd.DataFrame()
 
         with pytest.raises(ValueError, match="Не вдалося завантажити дані"):
             download_stock_data('INVALID', '2023-01-01', '2023-01-31')
 
+    @patch('investment_simulation.load_cached_data')
     @patch('investment_simulation.yf.download')
-    def test_handles_multiindex_columns(self, mock_download):
+    def test_handles_multiindex_columns(self, mock_download, mock_cache):
         """Should handle MultiIndex columns from yfinance."""
         df = pd.DataFrame(
             {'Close': [100, 101], 'Open': [99, 100]},
             index=pd.date_range('2023-01-01', periods=2)
         )
         df.columns = pd.MultiIndex.from_tuples([('Close', 'AAPL'), ('Open', 'AAPL')])
+
+        def cache_side_effect(data_type, identifier, start_year, end_year, fetch_func):
+            return fetch_func('2023-01-01', '2023-12-31')
+
+        mock_cache.side_effect = cache_side_effect
         mock_download.return_value = df
 
-        result = download_stock_data('AAPL', '2023-01-01', '2023-01-31')
+        result = download_stock_data('AAPL', '2023-01-01', '2023-12-31')
         assert 'Close' in result.columns
 
 
 class TestDownloadInflationData:
     """Tests for download_inflation_data function."""
 
+    @patch('investment_simulation.load_cached_data')
     @patch('investment_simulation.pdr.DataReader')
-    def test_returns_interpolated_daily_data(self, mock_reader):
+    def test_returns_interpolated_daily_data(self, mock_reader, mock_cache):
         """Should return daily interpolated CPI data."""
         monthly_data = pd.DataFrame(
             {'CPIAUCSL': [100, 101, 102]},
@@ -157,15 +175,26 @@ class TestDownloadInflationData:
         )
         mock_reader.return_value = monthly_data
 
+        def cache_side_effect(data_type, identifier, start_year, end_year, fetch_func):
+            return fetch_func('2023-01-01', '2023-03-31')
+
+        mock_cache.side_effect = cache_side_effect
+
         result = download_inflation_data('2023-01-01', '2023-03-31')
 
         assert isinstance(result, pd.Series)
         assert len(result) > 3  # Should be interpolated to daily
 
+    @patch('investment_simulation.load_cached_data')
     @patch('investment_simulation.pdr.DataReader')
-    def test_fallback_on_error(self, mock_reader):
+    def test_fallback_on_error(self, mock_reader, mock_cache):
         """Should use synthetic CPI when download fails."""
         mock_reader.side_effect = Exception("Connection error")
+
+        def cache_side_effect(data_type, identifier, start_year, end_year, fetch_func):
+            return fetch_func('2023-01-01', '2023-12-31')
+
+        mock_cache.side_effect = cache_side_effect
 
         result = download_inflation_data('2023-01-01', '2023-12-31')
 
@@ -176,8 +205,9 @@ class TestDownloadInflationData:
 class TestDownloadTbillRates:
     """Tests for download_tbill_rates function."""
 
+    @patch('investment_simulation.load_cached_data')
     @patch('investment_simulation.pdr.DataReader')
-    def test_converts_percentage_to_decimal(self, mock_reader):
+    def test_converts_percentage_to_decimal(self, mock_reader, mock_cache):
         """Should convert percentage to decimal (divide by 100)."""
         monthly_data = pd.DataFrame(
             {'TB3MS': [2.0, 2.5, 3.0]},  # Percentages
@@ -185,14 +215,25 @@ class TestDownloadTbillRates:
         )
         mock_reader.return_value = monthly_data
 
+        def cache_side_effect(data_type, identifier, start_year, end_year, fetch_func):
+            return fetch_func('2023-01-01', '2023-03-31')
+
+        mock_cache.side_effect = cache_side_effect
+
         result = download_tbill_rates('2023-01-01', '2023-03-31')
 
         assert result.iloc[0] == pytest.approx(0.02, rel=0.1)
 
+    @patch('investment_simulation.load_cached_data')
     @patch('investment_simulation.pdr.DataReader')
-    def test_fallback_on_error(self, mock_reader):
+    def test_fallback_on_error(self, mock_reader, mock_cache):
         """Should use default rate when download fails."""
         mock_reader.side_effect = Exception("Connection error")
+
+        def cache_side_effect(data_type, identifier, start_year, end_year, fetch_func):
+            return fetch_func('2023-01-01', '2023-12-31')
+
+        mock_cache.side_effect = cache_side_effect
 
         result = download_tbill_rates('2023-01-01', '2023-12-31')
 
@@ -437,9 +478,10 @@ class TestPrintSummary:
 class TestIntegration:
     """Integration tests for the full simulation flow."""
 
+    @patch('investment_simulation.load_cached_data')
     @patch('investment_simulation.yf.download')
     @patch('investment_simulation.pdr.DataReader')
-    def test_full_simulation_flow(self, mock_pdr, mock_yf):
+    def test_full_simulation_flow(self, mock_pdr, mock_yf, mock_cache):
         """Test complete simulation from data download to visualization."""
         # Setup mock data
         dates = pd.date_range('2023-01-01', '2023-06-30', freq='B')
@@ -460,6 +502,15 @@ class TestIntegration:
             index=pd.date_range('2023-01-01', periods=6, freq='MS')
         )
         mock_pdr.side_effect = [cpi_df, tbill_df]
+
+        # Track which call we're on to return appropriate data
+        call_count = [0]
+
+        def cache_side_effect(data_type, identifier, start_year, end_year, fetch_func):
+            call_count[0] += 1
+            return fetch_func('2023-01-01', '2023-06-30')
+
+        mock_cache.side_effect = cache_side_effect
 
         # Run simulation components
         stock_data = download_stock_data('TEST', '2023-01-01', '2023-06-30')
