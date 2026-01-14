@@ -156,6 +156,13 @@ def download_stock_data(ticker: str, start_date: str, end_date: str) -> pd.DataF
     if data.empty:
         raise ValueError(f"Не вдалося завантажити дані для {ticker}")
 
+    # Фільтруємо нульові та невалідні значення
+    if 'Close' in data.columns:
+        invalid_count = (data['Close'] <= 0).sum() + data['Close'].isna().sum()
+        if invalid_count > 0:
+            print(f"  (відфільтровано {invalid_count} невалідних значень)")
+            data = data[data['Close'] > 0].dropna(subset=['Close'])
+
     return data
 
 
