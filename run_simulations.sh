@@ -129,10 +129,7 @@ echo "========================================"
 echo "Оптимізація портфеля..."
 echo "========================================"
 
-python "$SCRIPT_DIR/optimize_portfolio.py" \
-    --start "$START_YEAR" \
-    --end "$END_YEAR" \
-    --amount "$AMOUNT"
+python "$SCRIPT_DIR/optimize_portfolio.py"
 
 # === ГЕНЕРАЦІЯ ЗВІТУ ===
 echo ""
