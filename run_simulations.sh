@@ -12,6 +12,9 @@
 START_YEAR=2020
 END_YEAR=2025
 AMOUNT=500
+LOOKBACK=3
+REBALANCE=3
+MAX_CHANGE=0.10
 
 # Тікери за замовчуванням:
 #   Індекси:
@@ -35,12 +38,15 @@ AMOUNT=500
 TICKERS="GSPC DJI IXIC QQQ EZU EEM TLT GLD VNQ BTC-USD ETH-USD SOL-USD"
 
 # === ПАРСИНГ АРГУМЕНТІВ ===
-while getopts "s:e:a:t:h" opt; do
+while getopts "s:e:a:t:l:r:c:h" opt; do
     case $opt in
         s) START_YEAR="$OPTARG" ;;
         e) END_YEAR="$OPTARG" ;;
         a) AMOUNT="$OPTARG" ;;
         t) TICKERS="$OPTARG" ;;
+        l) LOOKBACK="$OPTARG" ;;
+        r) REBALANCE="$OPTARG" ;;
+        c) MAX_CHANGE="$OPTARG" ;;
         h)
             echo "Investment Simulation Runner"
             echo ""
@@ -50,14 +56,17 @@ while getopts "s:e:a:t:h" opt; do
             echo "  -s YEAR    Початковий рік (за замовчуванням: $START_YEAR)"
             echo "  -e YEAR    Кінцевий рік (за замовчуванням: $END_YEAR)"
             echo "  -a AMOUNT  Сума інвестиції кожні 2 тижні (за замовчуванням: $AMOUNT)"
-            echo "  -t TICKERS Список тікерів в лапках (за замовчуванням: \"$TICKERS\")"
+            echo "  -t TICKERS Список тікерів в лапках"
+            echo "  -l YEARS   Lookback період для портфеля (за замовчуванням: $LOOKBACK)"
+            echo "  -r MONTHS  Частота ребалансування (за замовчуванням: $REBALANCE)"
+            echo "  -c CHANGE  Макс. зміна ваги за ребаланс (за замовчуванням: $MAX_CHANGE)"
             echo "  -h         Показати цю довідку"
             echo ""
             echo "Приклади:"
             echo "  $0"
-            echo "  $0 -s 2020 -e 2024 -a 1000"
-            echo "  $0 -t \"AAPL MSFT GOOGL BTC-USD\""
-            echo "  $0 -s 2015 -e 2025 -a 500 -t \"GSPC AAPL MSFT BTC-USD ETH-USD\""
+            echo "  $0 -s 2010 -e 2025 -a 300"
+            echo "  $0 -s 2010 -e 2025 -l 3 -r 3 -c 0.10"
+            echo "  $0 -t \"GSPC QQQ GLD TLT\""
             exit 0
             ;;
         \?)
@@ -129,7 +138,11 @@ echo "========================================"
 echo "Оптимізація портфеля..."
 echo "========================================"
 
-python "$SCRIPT_DIR/optimize_portfolio.py"
+python "$SCRIPT_DIR/optimize_portfolio.py" \
+    --amount "$AMOUNT" \
+    --lookback "$LOOKBACK" \
+    --rebalance "$REBALANCE" \
+    --max-change "$MAX_CHANGE"
 
 # === ГЕНЕРАЦІЯ ЗВІТУ ===
 echo ""

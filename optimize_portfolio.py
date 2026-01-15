@@ -365,6 +365,212 @@ def load_price_data(results_dir: Path) -> pd.DataFrame:
     return prices_df
 
 
+def calculate_optimal_weights_from_prices(
+    prices_df: pd.DataFrame,
+    max_weight: float = 0.4,
+    min_weight: float = 0.0,
+    previous_weights: np.ndarray = None,
+    max_weight_change: float = 0.10
+) -> tuple:
+    """
+    Розрахувати оптимальні ваги на основі історичних цін.
+
+    Args:
+        prices_df: DataFrame з цінами
+        max_weight: Максимальна вага активу
+        min_weight: Мінімальна вага активу
+        previous_weights: Попередні ваги (для обмеження зміни)
+        max_weight_change: Максимальна зміна ваги за один ребаланс (0.10 = 10%)
+
+    Returns:
+        tuple: (weights, tickers)
+    """
+    # Розраховуємо денні дохідності
+    returns_df = prices_df.pct_change().dropna()
+    returns_df = returns_df.replace([np.inf, -np.inf], np.nan).dropna()
+    returns_df = returns_df[(returns_df.abs() < 1).all(axis=1)]
+
+    if len(returns_df) < 60:  # Мінімум 60 днів
+        # Якщо недостатньо даних - рівномірний розподіл
+        n = len(prices_df.columns)
+        return np.array([1.0 / n] * n), prices_df.columns.tolist()
+
+    tickers = returns_df.columns.tolist()
+    n_assets = len(tickers)
+
+    mean_returns = returns_df.mean().values
+    cov_matrix = returns_df.cov().values
+
+    # Початкові ваги
+    if previous_weights is not None and len(previous_weights) == n_assets:
+        initial_weights = previous_weights.copy()
+    else:
+        initial_weights = np.array([1.0 / n_assets] * n_assets)
+
+    # Обмеження
+    constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1}]
+
+    # Межі для кожного активу з урахуванням обмеження зміни
+    if previous_weights is not None and len(previous_weights) == n_assets:
+        bounds = tuple(
+            (max(min_weight, prev - max_weight_change),
+             min(max_weight, prev + max_weight_change))
+            for prev in previous_weights
+        )
+    else:
+        bounds = tuple((min_weight, max_weight) for _ in range(n_assets))
+
+    # Оптимізація за Sharpe
+    result = minimize(
+        negative_sharpe,
+        initial_weights,
+        args=(mean_returns, cov_matrix),
+        method='SLSQP',
+        bounds=bounds,
+        constraints=constraints
+    )
+
+    if result.success:
+        return result.x, tickers
+    else:
+        return initial_weights, tickers
+
+
+def simulate_dynamic_portfolio(
+    prices_df: pd.DataFrame,
+    investment_amount: float = 500.0,
+    lookback_years: int = 3,
+    rebalance_months: int = 3,
+    max_weight: float = 0.4,
+    max_weight_change: float = 0.10
+) -> dict:
+    """
+    Симуляція портфеля з динамічним ребалансуванням.
+
+    Args:
+        prices_df: DataFrame з цінами активів
+        investment_amount: Сума інвестиції кожні 2 тижні
+        lookback_years: Кількість років для аналізу перед початком інвестування
+        rebalance_months: Частота ребалансування (в місяцях), за замовчуванням 3 (квартал)
+        max_weight: Максимальна вага одного активу
+        max_weight_change: Максимальна зміна ваги за один ребаланс (0.10 = 10%)
+
+    Returns:
+        dict з результатами симуляції
+    """
+    lookback_days = lookback_years * 252  # Торгових днів
+
+    if len(prices_df) < lookback_days + 60:
+        print(f"Недостатньо даних. Потрібно мінімум {lookback_days + 60} днів, є {len(prices_df)}")
+        return None
+
+    # Дати для симуляції (після lookback періоду)
+    all_dates = prices_df.index.tolist()
+    investment_start_idx = lookback_days
+    investment_start_date = all_dates[investment_start_idx]
+
+    print(f"\n📅 Lookback період: {all_dates[0].strftime('%Y-%m-%d')} - {all_dates[investment_start_idx-1].strftime('%Y-%m-%d')}")
+    print(f"📅 Період інвестування: {investment_start_date.strftime('%Y-%m-%d')} - {all_dates[-1].strftime('%Y-%m-%d')}")
+
+    # Генеруємо дати інвестування (кожні 2 тижні)
+    start_dt = investment_start_date.to_pydatetime() if hasattr(investment_start_date, 'to_pydatetime') else investment_start_date
+    end_dt = all_dates[-1].to_pydatetime() if hasattr(all_dates[-1], 'to_pydatetime') else all_dates[-1]
+    investment_dates = get_biweekly_fridays(start_dt, end_dt)
+
+    # Ініціалізація
+    tickers = prices_df.columns.tolist()
+    holdings = {t: 0.0 for t in tickers}
+    total_invested = 0.0
+    current_weights = None
+    last_rebalance_month = None
+
+    results = {
+        'dates': [],
+        'portfolio_value': [],
+        'total_invested': [],
+        'profit': [],
+        'profit_pct': [],
+        'weights_history': [],
+        'rebalance_dates': [],
+    }
+
+    # Симуляція
+    for i, date in enumerate(all_dates):
+        if i < investment_start_idx:
+            continue  # Пропускаємо lookback період
+
+        date_dt = date.to_pydatetime() if hasattr(date, 'to_pydatetime') else date
+        current_month = (date_dt.year, date_dt.month)
+
+        # Перевіряємо чи потрібно ребалансувати
+        need_rebalance = False
+        if current_weights is None:
+            need_rebalance = True
+        elif last_rebalance_month is None:
+            need_rebalance = True
+        else:
+            months_diff = (current_month[0] - last_rebalance_month[0]) * 12 + (current_month[1] - last_rebalance_month[1])
+            if months_diff >= rebalance_months:
+                need_rebalance = True
+
+        # Ребалансування
+        if need_rebalance:
+            # Використовуємо дані за останні lookback_years
+            lookback_start = max(0, i - lookback_days)
+            lookback_prices = prices_df.iloc[lookback_start:i]
+
+            if len(lookback_prices) >= 60:
+                new_weights, _ = calculate_optimal_weights_from_prices(
+                    lookback_prices,
+                    max_weight=max_weight,
+                    previous_weights=current_weights,
+                    max_weight_change=max_weight_change
+                )
+                current_weights = new_weights
+                last_rebalance_month = current_month
+                results['rebalance_dates'].append(date)
+
+                # Логування
+                if len(results['rebalance_dates']) <= 3 or len(results['rebalance_dates']) % 4 == 0:
+                    top_weights = sorted(zip(tickers, current_weights), key=lambda x: -x[1])[:3]
+                    top_str = ", ".join([f"{t}: {w*100:.0f}%" for t, w in top_weights])
+                    print(f"  📊 Ребаланс {date_dt.strftime('%Y-%m')}: {top_str}")
+
+        # Інвестування (якщо це день інвестування)
+        for inv_date in investment_dates:
+            if abs((inv_date - date_dt).days) == 0 and current_weights is not None:
+                for j, ticker in enumerate(tickers):
+                    price = prices_df.loc[date, ticker]
+                    if pd.notna(price) and price > 0:
+                        amount = investment_amount * current_weights[j]
+                        shares = amount / price
+                        holdings[ticker] += shares
+                total_invested += investment_amount
+                break
+
+        # Розрахунок вартості портфеля
+        portfolio_value = 0.0
+        for ticker in tickers:
+            price = prices_df.loc[date, ticker]
+            if pd.notna(price) and price > 0:
+                portfolio_value += holdings[ticker] * price
+
+        profit = portfolio_value - total_invested
+        profit_pct = (profit / total_invested * 100) if total_invested > 0 else 0
+
+        results['dates'].append(date)
+        results['portfolio_value'].append(portfolio_value)
+        results['total_invested'].append(total_invested)
+        results['profit'].append(profit)
+        results['profit_pct'].append(profit_pct)
+        if current_weights is not None:
+            results['weights_history'].append(dict(zip(tickers, current_weights)))
+
+    print(f"\n  ✅ Всього ребалансувань: {len(results['rebalance_dates'])}")
+
+    return results
+
+
 def simulate_portfolio_investment(
     prices_df: pd.DataFrame,
     weights: np.ndarray,
@@ -569,6 +775,221 @@ def print_simulation_summary(optimal_results: dict, equal_results: dict):
     print("=" * 80)
 
 
+def print_simulation_summary_three(dynamic_results: dict, optimal_results: dict, equal_results: dict):
+    """Вивести підсумок симуляції трьох портфелів."""
+    print("\n" + "=" * 90)
+    print("📊 РЕЗУЛЬТАТИ СИМУЛЯЦІЇ")
+    print("=" * 90)
+
+    dyn_final = dynamic_results['portfolio_value'][-1]
+    dyn_invested = dynamic_results['total_invested'][-1]
+    dyn_profit = dynamic_results['profit'][-1]
+    dyn_profit_pct = dynamic_results['profit_pct'][-1]
+
+    opt_final = optimal_results['portfolio_value'][-1]
+    opt_invested = optimal_results['total_invested'][-1]
+    opt_profit = optimal_results['profit'][-1]
+    opt_profit_pct = optimal_results['profit_pct'][-1]
+
+    eq_final = equal_results['portfolio_value'][-1]
+    eq_invested = equal_results['total_invested'][-1]
+    eq_profit = equal_results['profit'][-1]
+    eq_profit_pct = equal_results['profit_pct'][-1]
+
+    print(f"\n{'Метрика':<25} {'Динамічний':>15} {'Статичний':>15} {'Рівномірний':>15}")
+    print("-" * 75)
+    print(f"{'Інвестовано':<25} ${dyn_invested:>13,.0f} ${opt_invested:>13,.0f} ${eq_invested:>13,.0f}")
+    print(f"{'Фінальна вартість':<25} ${dyn_final:>13,.0f} ${opt_final:>13,.0f} ${eq_final:>13,.0f}")
+    print(f"{'Прибуток':<25} ${dyn_profit:>13,.0f} ${opt_profit:>13,.0f} ${eq_profit:>13,.0f}")
+    print(f"{'Прибуток %':<25} {dyn_profit_pct:>14.1f}% {opt_profit_pct:>14.1f}% {eq_profit_pct:>14.1f}%")
+    print("-" * 75)
+
+    # Визначаємо найкращий портфель
+    best_portfolio = max([
+        ('Динамічний', dyn_final),
+        ('Статичний', opt_final),
+        ('Рівномірний', eq_final)
+    ], key=lambda x: x[1])
+
+    print(f"\n🏆 Найкращий портфель: {best_portfolio[0]} (${best_portfolio[1]:,.0f})")
+    print(f"   Перевага динамічного над статичним: ${dyn_final - opt_final:+,.0f}")
+    print(f"   Перевага динамічного над рівномірним: ${dyn_final - eq_final:+,.0f}")
+    print("=" * 90)
+
+
+def create_portfolio_visualization_three(
+    dynamic_results: dict,
+    optimal_results: dict,
+    equal_results: dict,
+    output_dir: Path,
+    lookback_years: int = 3,
+    rebalance_months: int = 3,
+    investment_amount: float = 500.0
+):
+    """Створити візуалізацію порівняння трьох портфелів."""
+
+    plt.style.use('seaborn-v0_8-darkgrid')
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+    dates = dynamic_results['dates']
+
+    # 1. Вартість портфелів
+    ax = axes[0, 0]
+    ax.plot(dates, dynamic_results['portfolio_value'], 'g-', linewidth=2, label='Динамічний')
+    ax.plot(dates, optimal_results['portfolio_value'], 'b-', linewidth=2, label='Статичний')
+    ax.plot(dates, equal_results['portfolio_value'], 'orange', linewidth=2, label='Рівномірний')
+    ax.plot(dates, dynamic_results['total_invested'], 'r--', linewidth=1.5, label='Інвестовано')
+    ax.set_title('Вартість портфелів', fontsize=14)
+    ax.set_ylabel('Вартість ($)')
+    ax.legend()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+
+    # 2. Прибуток в $
+    ax = axes[0, 1]
+    ax.plot(dates, dynamic_results['profit'], 'g-', linewidth=2, label='Динамічний')
+    ax.plot(dates, optimal_results['profit'], 'b-', linewidth=2, label='Статичний')
+    ax.plot(dates, equal_results['profit'], 'orange', linewidth=2, label='Рівномірний')
+    ax.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+    ax.set_title('Прибуток ($)', fontsize=14)
+    ax.set_ylabel('Прибуток ($)')
+    ax.legend()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+
+    # 3. Прибуток в %
+    ax = axes[1, 0]
+    ax.plot(dates, dynamic_results['profit_pct'], 'g-', linewidth=2, label='Динамічний')
+    ax.plot(dates, optimal_results['profit_pct'], 'b-', linewidth=2, label='Статичний')
+    ax.plot(dates, equal_results['profit_pct'], 'orange', linewidth=2, label='Рівномірний')
+    ax.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+    ax.set_title('Прибуток (%)', fontsize=14)
+    ax.set_ylabel('Прибуток (%)')
+    ax.legend()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+
+    # 4. Перевага динамічного портфеля
+    ax = axes[1, 1]
+    diff_vs_static = [d - o for d, o in zip(dynamic_results['profit'], optimal_results['profit'])]
+    diff_vs_equal = [d - e for d, e in zip(dynamic_results['profit'], equal_results['profit'])]
+    ax.plot(dates, diff_vs_static, 'b-', linewidth=2, label='vs Статичний')
+    ax.plot(dates, diff_vs_equal, 'orange', linewidth=2, label='vs Рівномірний')
+    ax.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+    ax.fill_between(dates, diff_vs_static, 0,
+                    where=[d > 0 for d in diff_vs_static],
+                    alpha=0.3, color='green')
+    ax.fill_between(dates, diff_vs_static, 0,
+                    where=[d < 0 for d in diff_vs_static],
+                    alpha=0.3, color='red')
+    ax.set_title('Перевага динамічного портфеля ($)', fontsize=14)
+    ax.set_ylabel('Різниця ($)')
+    ax.legend()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+
+    for ax in axes.flat:
+        for label in ax.get_xticklabels():
+            label.set_rotation(45)
+
+    plt.suptitle(f'Порівняння: Динамічний vs Статичний vs Рівномірний портфель\n'
+                 f'(lookback {lookback_years} років, ребаланс кожні {rebalance_months} міс., '
+                 f'інвестиція ${investment_amount:.0f}/2 тижні)',
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+
+    output_file = output_dir / 'portfolio_comparison.png'
+    plt.savefig(output_file, dpi=150)
+    plt.close()
+
+    print(f"\n📈 Графік збережено в: {output_file}")
+
+
+def create_weights_visualization(dynamic_results: dict, output_dir: Path):
+    """Створити візуалізацію розподілу ваг портфеля в часі."""
+
+    if 'weights_history' not in dynamic_results or not dynamic_results['weights_history']:
+        print("Немає даних про ваги для візуалізації")
+        return
+
+    # Отримуємо дати ребалансування та відповідні ваги
+    weights_history = dynamic_results['weights_history']
+    rebalance_dates = dynamic_results.get('rebalance_dates', [])
+
+    if not weights_history:
+        return
+
+    # Отримуємо список тікерів
+    tickers = list(weights_history[0].keys())
+
+    # Створюємо DataFrame з вагами на кожну дату
+    # Беремо ваги тільки на дати ребалансування
+    weights_data = []
+    for i, date in enumerate(dynamic_results['dates']):
+        if i < len(weights_history):
+            row = {'date': date}
+            row.update(weights_history[i])
+            weights_data.append(row)
+
+    weights_df = pd.DataFrame(weights_data)
+    weights_df = weights_df.set_index('date')
+
+    # Семплюємо щомісяця для кращої візуалізації
+    weights_df = weights_df.resample('ME').last().dropna()
+
+    plt.style.use('seaborn-v0_8-darkgrid')
+    fig, axes = plt.subplots(2, 1, figsize=(16, 12))
+
+    # 1. Stacked Area Chart - розподіл ваг в часі
+    ax = axes[0]
+
+    # Сортуємо тікери за середньою вагою
+    avg_weights = weights_df.mean().sort_values(ascending=False)
+    sorted_tickers = avg_weights.index.tolist()
+
+    # Створюємо stacked area
+    colors = plt.cm.tab20(np.linspace(0, 1, len(sorted_tickers)))
+    ax.stackplot(weights_df.index, [weights_df[t] * 100 for t in sorted_tickers],
+                 labels=sorted_tickers, colors=colors, alpha=0.8)
+
+    ax.set_title('Розподіл портфеля в часі (динамічний)', fontsize=14)
+    ax.set_ylabel('Вага (%)')
+    ax.set_ylim(0, 100)
+    ax.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), fontsize=9)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+
+    # 2. Bar Chart - останній розподіл
+    ax = axes[1]
+
+    last_weights = weights_df.iloc[-1].sort_values(ascending=True)
+    last_weights_pct = last_weights * 100
+
+    # Фільтруємо тільки активи з вагою > 0.5%
+    last_weights_pct = last_weights_pct[last_weights_pct > 0.5]
+
+    colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(last_weights_pct)))
+    bars = ax.barh(last_weights_pct.index, last_weights_pct.values, color=colors)
+
+    # Додаємо підписи на стовпці
+    for bar, val in zip(bars, last_weights_pct.values):
+        ax.text(val + 0.5, bar.get_y() + bar.get_height()/2,
+                f'{val:.1f}%', va='center', fontsize=10)
+
+    ax.set_title(f'Поточний розподіл портфеля ({weights_df.index[-1].strftime("%Y-%m")})', fontsize=14)
+    ax.set_xlabel('Вага (%)')
+    ax.set_xlim(0, max(last_weights_pct.values) * 1.15)
+
+    plt.suptitle('Динамічний портфель - розподіл активів', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+
+    output_file = output_dir / 'portfolio_weights.png'
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    print(f"📊 Графік ваг збережено в: {output_file}")
+
+
 def print_equal_weight_comparison(returns_df: pd.DataFrame,
                                    optimal_results: dict):
     """Порівняти з рівномірним розподілом."""
@@ -637,6 +1058,34 @@ def main():
         help='Мінімальна вага одного активу (за замовчуванням: 0.0)'
     )
 
+    parser.add_argument(
+        '--lookback',
+        type=int,
+        default=3,
+        help='Lookback період в роках для динамічного портфеля (за замовчуванням: 3)'
+    )
+
+    parser.add_argument(
+        '--rebalance',
+        type=int,
+        default=3,
+        help='Частота ребалансування в місяцях (за замовчуванням: 3 = квартал)'
+    )
+
+    parser.add_argument(
+        '--max-change',
+        type=float,
+        default=0.10,
+        help='Максимальна зміна ваги за ребаланс (за замовчуванням: 0.10 = 10%%)'
+    )
+
+    parser.add_argument(
+        '--amount',
+        type=float,
+        default=500.0,
+        help='Сума інвестиції кожні 2 тижні (за замовчуванням: 500)'
+    )
+
     args = parser.parse_args()
 
     results_dir = Path(args.dir)
@@ -690,42 +1139,72 @@ def main():
     prices_df = load_price_data(results_dir)
 
     if not prices_df.empty:
-        # Оптимальний портфель
-        optimal_sim = simulate_portfolio_investment(
+        # 1. Динамічний портфель (з ребалансуванням)
+        print(f"\n🔄 ДИНАМІЧНИЙ ПОРТФЕЛЬ (lookback {args.lookback} років, ребаланс кожні {args.rebalance} міс., макс зміна {args.max_change*100:.0f}%):")
+        dynamic_sim = simulate_dynamic_portfolio(
             prices_df,
-            results['weights'],
-            results['tickers'],
-            investment_amount=500.0
+            investment_amount=args.amount,
+            lookback_years=args.lookback,
+            rebalance_months=args.rebalance,
+            max_weight=args.max_weight,
+            max_weight_change=args.max_change
         )
 
-        # Рівномірний портфель
-        n_assets = len(results['tickers'])
-        equal_weights = np.array([1.0 / n_assets] * n_assets)
-        equal_sim = simulate_portfolio_investment(
-            prices_df,
-            equal_weights,
-            results['tickers'],
-            investment_amount=500.0
-        )
+        # 2. Статичний оптимальний портфель (ваги з повного періоду)
+        print("\n📊 СТАТИЧНИЙ ОПТИМАЛЬНИЙ ПОРТФЕЛЬ:")
+        if dynamic_sim:
+            # Симулюємо з тієї ж дати що й динамічний
+            start_idx = prices_df.index.get_loc(dynamic_sim['dates'][0])
+            static_prices = prices_df.iloc[start_idx:]
 
-        # Підсумок
-        print_simulation_summary(optimal_sim, equal_sim)
+            optimal_sim = simulate_portfolio_investment(
+                static_prices,
+                results['weights'],
+                results['tickers'],
+                investment_amount=args.amount
+            )
 
-        # Візуалізація
-        create_portfolio_visualization(optimal_sim, equal_sim, results_dir)
+            # 3. Рівномірний портфель
+            print("\n⚖️ РІВНОМІРНИЙ ПОРТФЕЛЬ:")
+            n_assets = len(results['tickers'])
+            equal_weights = np.array([1.0 / n_assets] * n_assets)
+            equal_sim = simulate_portfolio_investment(
+                static_prices,
+                equal_weights,
+                results['tickers'],
+                investment_amount=args.amount
+            )
 
-        # Зберігаємо дані симуляції
-        sim_df = pd.DataFrame({
-            'date': optimal_sim['dates'],
-            'optimal_value': optimal_sim['portfolio_value'],
-            'optimal_profit': optimal_sim['profit'],
-            'equal_value': equal_sim['portfolio_value'],
-            'equal_profit': equal_sim['profit'],
-            'total_invested': optimal_sim['total_invested'],
-        })
-        sim_file = results_dir / 'portfolio_simulation.csv'
-        sim_df.to_csv(sim_file, index=False)
-        print(f"📊 Дані симуляції збережено в: {sim_file}")
+            # Підсумок всіх трьох портфелів
+            print_simulation_summary_three(dynamic_sim, optimal_sim, equal_sim)
+
+            # Візуалізація
+            create_portfolio_visualization_three(
+                dynamic_sim, optimal_sim, equal_sim, results_dir,
+                lookback_years=args.lookback,
+                rebalance_months=args.rebalance,
+                investment_amount=args.amount
+            )
+
+            # Візуалізація ваг портфеля
+            create_weights_visualization(dynamic_sim, results_dir)
+
+            # Зберігаємо дані симуляції
+            sim_df = pd.DataFrame({
+                'date': dynamic_sim['dates'],
+                'dynamic_value': dynamic_sim['portfolio_value'],
+                'dynamic_profit': dynamic_sim['profit'],
+                'optimal_value': optimal_sim['portfolio_value'],
+                'optimal_profit': optimal_sim['profit'],
+                'equal_value': equal_sim['portfolio_value'],
+                'equal_profit': equal_sim['profit'],
+                'total_invested': dynamic_sim['total_invested'],
+            })
+            sim_file = results_dir / 'portfolio_simulation.csv'
+            sim_df.to_csv(sim_file, index=False)
+            print(f"\n📊 Дані симуляції збережено в: {sim_file}")
+        else:
+            print("Недостатньо даних для динамічної симуляції")
     else:
         print("Не вдалося завантажити дані цін для симуляції")
 
