@@ -10,7 +10,12 @@ __pycache__/
 .Python
 
 # Simulation results (generated)
-simulation_results/
+simulation_results*/
+
+# Packaging / tooling
+*.egg-info/
+build/
+.pytest_cache/
 
 # Cache (downloaded data for past years)
 cache/

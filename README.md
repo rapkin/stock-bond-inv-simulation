@@ -1,144 +1,95 @@
-# Investment Simulation
+# invsim — Investment Simulation
 
-Інструменти для симуляції довгострокових інвестицій з використанням стратегії Dollar Cost Averaging (DCA) та оптимізації портфеля.
+**Goal:** answer the question an ordinary person with a salary asks about investing —
+*"If I had put a fixed amount of every paycheck into asset X, what would I actually
+have today, in real purchasing power, and what risk would I have lived through?"*
 
-## Можливості
+The simulator models **dollar-cost averaging (DCA)**: a fixed dollar amount invested
+every second Friday (payday), and compares the outcome against the realistic
+alternatives:
 
-- **DCA симуляція** - регулярні покупки кожної другої п'ятниці з порівнянням T-bills
-- **Реальна дохідність** - врахування інфляції через CPI
-- **Метрики ризику** - Sharpe, Sortino, Calmar Ratio, Max Drawdown
-- **Оптимізація портфеля** - Modern Portfolio Theory (Mean-Variance Optimization)
-- **HTML звіт** - інтерактивний огляд результатів
+- **Cash under the mattress** — loses purchasing power to inflation (real CPI data);
+- **3-month T-bills** — the risk-free baseline (real FRED rates);
+- **Other assets** — same methodology for every ticker, so results are comparable;
+- **Portfolios** — Modern Portfolio Theory weights, including a walk-forward
+  dynamically rebalanced portfolio with no look-ahead.
 
-## Швидкий старт
+It is an **analysis tool, not financial advice**. It only looks at history, and does
+not model taxes, broker fees, or commissions.
 
-```bash
-# Клонування та налаштування
-git clone <repo-url>
-cd stock-bond-inv-simulation
-
-# Запуск всіх симуляцій (автоматично створить venv)
-./run_simulations.sh
-```
-
-Результати будуть у `simulation_results/report.html`
-
-## Встановлення
+## Quick start
 
 ```bash
-# Створення віртуального оточення
-python3 -m venv venv
-source venv/bin/activate  # Linux/macOS
-# venv\Scripts\activate   # Windows
+python3 -m venv venv && source venv/bin/activate
+pip install -e '.[dev]'
 
-# Встановлення залежностей
-pip install -r requirements.txt
+# Full pipeline: simulate all default tickers, compare, optimize, HTML report
+invsim run -s 2018 -e 2025 -a 500
+
+open simulation_results/report.html
 ```
 
-## Використання
+## Commands
 
-### Основний скрипт
+| Command | What it does |
+|---------|--------------|
+| `invsim simulate -t QQQ -s 2020 -e 2025 -a 500` | DCA simulation of one ticker: dashboard chart, CSVs, risk metrics |
+| `invsim run -t "GSPC QQQ GLD TLT" ...` | Everything: per-ticker sims → comparison table → portfolio optimization → `report.html` |
+| `invsim portfolio --lookback 3 --rebalance 3 --max-weight 0.4 --max-change 0.10` | Dynamic vs static vs equal-weight portfolio comparison |
+| `invsim grid --lookback-grid 2 3 4 --rebalance-grid 1 3 6` | Hyperparameter grid search for the dynamic portfolio |
 
-```bash
-./run_simulations.sh [опції]
-```
+Common options: `--start/-s`, `--end/-e` (years), `--amount/-a` ($ per 2 weeks),
+`--output/-o` (default `./simulation_results`), `--tickers/-t`.
 
-| Опція | Опис | За замовчуванням |
-|-------|------|------------------|
-| `-s YEAR` | Початковий рік | 2020 |
-| `-e YEAR` | Кінцевий рік | 2025 |
-| `-a AMOUNT` | Сума інвестиції ($/2 тижні) | 500 |
-| `-t "TICKERS"` | Список тікерів | Див. нижче |
+Default tickers: `GSPC DJI IXIC QQQ` (US indices), `EZU EEM` (regions), `TLT`
+(bonds), `GLD` (gold), `VNQ` (REITs), `BTC-USD ETH-USD SOL-USD` (crypto).
+Index shorthands (`GSPC`, `DJI`, `IXIC`) map to Yahoo Finance `^`-symbols
+automatically.
 
-**Приклади:**
+## Metrics
 
-```bash
-# За замовчуванням
-./run_simulations.sh
+All risk metrics are computed on **flow-adjusted (time-weighted) returns** — daily
+returns with contribution cash flows stripped out — so contributions can never
+masquerade as market gains. The money outcome is reported separately as **XIRR**
+(money-weighted annual return of the actual cash flows).
 
-# Власний період та сума
-./run_simulations.sh -s 2015 -e 2024 -a 1000
+| Metric | Meaning |
+|--------|---------|
+| `total_return_pct` | Final value vs total contributed |
+| `xirr_pct` | Money-weighted annual return of your actual dollars |
+| `cagr_pct` | Time-weighted annual growth (market performance of the strategy) |
+| `annual_volatility_pct`, `sharpe_ratio`, `sortino_ratio` | Risk-adjusted quality, vs the real T-bill rate |
+| `max_drawdown_pct`, `max_underwater_days`, `calmar_ratio` | Worst-case pain |
+| `risk_reward_score` | Combined heuristic ranking (see [docs/METHODOLOGY.md](docs/METHODOLOGY.md)) |
 
-# Власний набір тікерів
-./run_simulations.sh -t "AAPL MSFT GOOGL BTC-USD"
-```
-
-### Окремі скрипти
-
-```bash
-# Симуляція для одного тікера
-python investment_simulation.py -t AAPL -s 2020 -e 2025 -a 500
-
-# Агрегація метрик
-python aggregate_results.py
-
-# Оптимізація портфеля
-python optimize_portfolio.py -s 2020 -e 2025 -a 500
-
-# Генерація HTML звіту
-python generate_report.py
-```
-
-## Тікери за замовчуванням
-
-| Категорія | Тікери | Опис |
-|-----------|--------|------|
-| **Індекси** | GSPC, DJI, IXIC, QQQ | S&P 500, Dow Jones, Nasdaq, QQQ ETF |
-| **Регіони** | EZU, EEM | Eurozone, Emerging Markets |
-| **Облігації** | TLT | 20+ Year Treasury Bond |
-| **Commodities** | GLD | Gold (SPDR) |
-| **Нерухомість** | VNQ | Real Estate (REITs) |
-| **Крипто** | BTC-USD, ETH-USD, SOL-USD | Bitcoin, Ethereum, Solana |
-
-## Структура результатів
+## Project layout
 
 ```
-simulation_results/
-├── GSPC_2020-2025_$500/
-│   ├── 1_stock_price.png
-│   ├── 2_portfolio_value.png
-│   ├── 3_portfolio_profit.png
-│   ├── 4_stocks_vs_tbills.png
-│   ├── 5_real_profit_comparison.png
-│   ├── 6_dashboard.png
-│   ├── metrics.csv
-│   └── simulation_data.csv
-├── ...
-├── comparison.csv           # Порівняння всіх активів
-├── portfolio_results.csv    # Результати оптимізації
-├── portfolio_comparison.png # Графік порівняння портфелів
-└── report.html              # HTML звіт
+invsim/
+├── data.py        # Yahoo Finance + FRED access, per-year cache (raw data only)
+├── schedule.py    # biweekly paydays aligned to next trading day
+├── simulation.py  # vectorized DCA engines + T-bill/inflation benchmarks
+├── metrics.py     # TWR metrics, XIRR, drawdowns, risk-reward score
+├── optimize.py    # max-Sharpe / min-variance weights, walk-forward optimizer
+├── plots.py       # dashboards and portfolio charts
+├── report.py      # self-contained HTML report
+└── cli.py         # invsim simulate | run | portfolio | grid
+tests/             # pytest suite (run: pytest)
+docs/METHODOLOGY.md    # formulas, assumptions, data sources
+docs/LEGACY_REVIEW.md  # what was wrong in the old scripts and what changed
+legacy/                # previous implementation, kept for reference
 ```
 
-## Метрики
+## Data & caching
 
-| Метрика | Опис |
-|---------|------|
-| **Total Return** | Загальна дохідність (%) |
-| **CAGR** | Compound Annual Growth Rate |
-| **Sharpe Ratio** | Risk-adjusted return (vs risk-free rate) |
-| **Sortino Ratio** | Sharpe з урахуванням лише негативної волатильності |
-| **Max Drawdown** | Максимальна просадка від піку |
-| **Calmar Ratio** | CAGR / Max Drawdown |
-| **Risk-Reward Score** | Комбінована метрика (див. SPECIFICATION.md) |
+- Prices: Yahoo Finance **adjusted close** (splits + dividends included).
+- CPI (`CPIAUCSL`) and 3-month T-bill rate (`TB3MS`): FRED, with a clearly-warned
+  synthetic fallback (3% inflation / 2% rate) if FRED is unreachable.
+- Cached per calendar year under `cache/`; only completed years are cached, the
+  current year is always fetched fresh. Delete `cache/` to force a refetch.
 
-## Тести
+## Limitations
 
-```bash
-# Всі тести
-pytest test_investment_simulation.py -v
-
-# З покриттям
-pytest test_investment_simulation.py --cov=investment_simulation
-```
-
-## Обмеження
-
-- Не враховує комісії брокера
-- Не враховує податки
-- Не враховує дивіденди (для деяких індексів)
-- Дані інфляції та T-bills тільки для США
-
-## Ліцензія
-
-MIT
+- No taxes, broker fees, or commissions (jurisdiction-dependent).
+- CPI and T-bill data are US-only.
+- Historical simulation only — nothing here predicts the future.
