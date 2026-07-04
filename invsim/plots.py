@@ -92,6 +92,25 @@ def portfolio_comparison(frames: dict[str, pd.DataFrame], output_path: Path) -> 
     plt.close(fig)
 
 
+def rolling_xirr_chart(per_ticker: dict[str, pd.DataFrame], output_path: Path) -> None:
+    """Money-weighted return of every rolling window, by window start date."""
+    fig, ax = plt.subplots(figsize=(14, 7))
+    for name, windows in per_ticker.items():
+        if windows.empty:
+            continue
+        starts = pd.to_datetime(windows["window_start"])
+        ax.plot(starts, windows["xirr_pct"], linewidth=1.4, label=name)
+    ax.axhline(0, color="tab:red", linestyle="--", alpha=0.5)
+    ax.set_title("DCA outcome by start date (rolling windows)")
+    ax.set_ylabel("XIRR (%/yr)")
+    ax.set_xlabel("Window start")
+    ax.legend(fontsize=8, ncol=2)
+    _format_year_axis(ax)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
 def weights_chart(weight_history: pd.DataFrame, output_path: Path) -> None:
     """Stacked area chart of dynamic portfolio target weights over time."""
     fig, ax = plt.subplots(figsize=(14, 7))

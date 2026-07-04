@@ -117,6 +117,51 @@ whose daily changes are contaminated by contribution inflows.
 The risk-free rate for optimization is the mean FRED T-bill rate over the period
 (not a hardcoded constant).
 
+## Trading costs (opt-in, default zero)
+
+- **Commission** — each asset bought or sold is one trade leg; a leg of gross
+  value `g` invests `g·(1 − pct) − fixed` (never negative). A portfolio buy
+  across N assets is N legs.
+- **Annual fee** (advisory fee, or the expense ratio of a raw index — note ETF
+  adjusted closes already include their own expense ratio, don't double-count) —
+  continuous ACT/365 drag. Implemented exactly by simulating against
+  fee-adjusted prices `p̃_t = p_t · (1 − fee)^(days/365)`, which is equivalent to
+  holdings decaying at the fee rate.
+- **Capital-gains tax** — charged when the dynamic portfolio sells at a
+  rebalance: selling fraction `f` of an asset realizes `f · (value − basis)`
+  using average-cost basis per asset; positive gains are taxed and the tax plus
+  commissions are deducted from the portfolio before reallocating (one-pass
+  approximation of the post-cost fixed point). Final liquidation is not taxed.
+
+Costs reduce value, never `invested` — the investor still paid the full
+contribution out of pocket.
+
+## Rolling-window robustness (`invsim rolling`)
+
+One backtest is a single draw from history; DCA outcomes are dominated by the
+start date. The rolling analysis re-runs the identical plan over every window
+of length `--window` years, stepping the start by `--step` months, and reports
+the distribution: median / 10th-percentile / worst / best XIRR, the worst
+drawdown ever encountered, and the share of windows that beat T-bills and
+inflation. Read the summary as "if I had started this plan at a random point
+in the past, what usually happened — and what's the realistic bad case?"
+
+## Walk-forward hyperparameter validation (`invsim grid`)
+
+In-sample grid search selects whatever won the past — overfitting by
+construction. The default mode (`--folds 3`) does anchored walk-forward CV:
+
+1. The evaluation span (after the longest warm-up) is split into `folds + 1`
+   equal chunks; the first extends the initial training span.
+2. Per fold: every combination is scored on data strictly *before* the fold
+   (the strategy itself is walk-forward, so this is genuinely out-of-fold),
+   the best is selected on the training score (Sharpe), and only then scored
+   on the unseen fold, next to an equal-weight baseline on the same window.
+
+The output to trust is the mean out-of-sample score of the tuned parameters
+versus the equal-weight baseline, and the train→test degradation. If tuning
+doesn't beat 1/N out of sample, the "optimal" parameters are noise.
+
 ## Data sources
 
 | Series | Source | Notes |

@@ -20,14 +20,16 @@ from . import plots, report
 from .data import MarketData, align_monthly
 from .metrics import performance_metrics
 from .optimize import optimize_weights
+from .robustness import rolling_dca, summarize_windows
 from .schedule import contribution_schedule
 from .simulation import (
+    Costs,
     add_benchmarks,
-    investing_start,
     simulate_dca,
     simulate_dynamic_portfolio,
     simulate_portfolio,
 )
+from .validation import build_grid, walk_forward_validate
 
 DEFAULT_TICKERS = [
     "GSPC", "DJI", "IXIC", "QQQ",       # US indices
@@ -47,11 +49,20 @@ def _rf_series(market: MarketData, args) -> pd.Series:
     return market.tbill_rate(args.start, args.end)
 
 
+def _costs_from(args) -> Costs:
+    return Costs(
+        commission_pct=args.commission,
+        commission_fixed=args.commission_fixed,
+        annual_fee_pct=args.annual_fee,
+        capital_gains_tax_pct=args.cgt,
+    )
+
+
 def _simulate_one(market: MarketData, ticker: str, args, output_root: Path) -> dict:
     """Simulate one ticker; write dashboard + CSVs; return its metrics row."""
     prices = market.prices(ticker, args.start, args.end)
     contributions = contribution_schedule(prices.index, args.amount)
-    frame = simulate_dca(prices, contributions)
+    frame = simulate_dca(prices, contributions, _costs_from(args))
     frame = add_benchmarks(frame, market.tbill_rate(args.start, args.end), market.cpi(args.start, args.end))
 
     rf = align_monthly(_rf_series(market, args), frame.index)
@@ -137,6 +148,7 @@ def _run_portfolio(
     rf_mean = float(tbill.mean())
 
     contributions = contribution_schedule(prices.index, args.amount)
+    costs = _costs_from(args)
 
     dynamic_frame, weight_history = simulate_dynamic_portfolio(
         prices,
@@ -146,6 +158,7 @@ def _run_portfolio(
         max_weight=args.max_weight,
         max_change=args.max_change,
         risk_free_rate=rf_mean,
+        costs=costs,
     )
 
     # Fair comparison: static and equal-weight invest over the same window as
@@ -163,8 +176,10 @@ def _run_portfolio(
 
     frames = {
         "Dynamic (walk-forward)": dynamic_frame,
-        "Static (warm-up optimal)": simulate_portfolio(prices, window_contributions, baseline_weights),
-        "Equal weight": simulate_portfolio(prices, window_contributions, equal_weights),
+        "Static (warm-up optimal)": simulate_portfolio(
+            prices, window_contributions, baseline_weights, costs
+        ),
+        "Equal weight": simulate_portfolio(prices, window_contributions, equal_weights, costs),
     }
 
     rf_daily = align_monthly(tbill, prices.index)
@@ -204,9 +219,62 @@ def cmd_grid(args) -> int:
     tbill = market.tbill_rate(args.start, args.end)
     rf_daily = align_monthly(tbill, prices.index)
     contributions = contribution_schedule(prices.index, args.amount)
+    costs = _costs_from(args)
+    output_root = Path(args.output)
+    output_root.mkdir(parents=True, exist_ok=True)
 
+    if args.folds > 0:
+        return _grid_walk_forward(args, prices, contributions, tbill, rf_daily, costs, output_root)
+    return _grid_in_sample(args, prices, contributions, tbill, rf_daily, costs, output_root)
+
+
+def _grid_walk_forward(args, prices, contributions, tbill, rf_daily, costs, output_root) -> int:
+    grid = build_grid(args.lookback_grid, args.rebalance_grid, args.max_change_grid)
+    print(
+        f"Walk-forward validation: {len(grid)} combinations, {args.folds} test folds, "
+        f"{len(prices.columns)} assets"
+    )
+    fold_results, combo_scores = walk_forward_validate(
+        prices,
+        contributions,
+        grid,
+        folds=args.folds,
+        rf_daily=rf_daily,
+        risk_free_rate=float(tbill.mean()),
+        max_weight=args.max_weight,
+        costs=costs,
+    )
+    if fold_results.empty:
+        print("No fold produced a valid result", file=sys.stderr)
+        return 1
+
+    fold_results.to_csv(output_root / "grid_validation_folds.csv", index=False)
+    combo_scores.to_csv(output_root / "grid_validation_combos.csv", index=False)
+
+    print("\n=== Walk-forward results (tuned on train, scored on unseen test) ===")
+    print(fold_results.to_string(index=False))
+
+    test_col = "test_sharpe_ratio"
+    baseline_col = "equal_weight_sharpe_ratio"
+    scored = fold_results.dropna(subset=[test_col, baseline_col])
+    if not scored.empty:
+        tuned = scored[test_col].mean()
+        baseline = scored[baseline_col].mean()
+        degradation = (fold_results["train_sharpe_ratio"] - fold_results[test_col]).mean()
+        print(f"\nMean out-of-sample Sharpe: tuned {tuned:.3f} vs equal-weight {baseline:.3f}")
+        print(f"Mean train->test degradation: {degradation:.3f}")
+        if tuned <= baseline:
+            print("Verdict: tuning does NOT beat the equal-weight baseline out of sample.")
+        else:
+            print("Verdict: tuned parameters kept an edge out of sample — but check stability across folds.")
+    print(f"\nSaved: {output_root / 'grid_validation_folds.csv'}")
+    return 0
+
+
+def _grid_in_sample(args, prices, contributions, tbill, rf_daily, costs, output_root) -> int:
     combos = list(itertools.product(args.lookback_grid, args.rebalance_grid, args.max_change_grid))
-    print(f"Grid search: {len(combos)} combinations over {len(prices.columns)} assets")
+    print(f"In-sample grid search ({len(combos)} combinations) — beware of overfitting; "
+          f"prefer --folds 3")
     rows = []
     for i, (lookback, rebalance, max_change) in enumerate(combos, 1):
         try:
@@ -218,6 +286,7 @@ def cmd_grid(args) -> int:
                 max_weight=args.max_weight,
                 max_change=max_change,
                 risk_free_rate=float(tbill.mean()),
+                costs=costs,
             )
         except ValueError as exc:
             print(f"[{i}/{len(combos)}] lookback={lookback} rebalance={rebalance} "
@@ -240,12 +309,62 @@ def cmd_grid(args) -> int:
     results = results[front + [c for c in results.columns if c not in front]]
     results = results.sort_values("risk_reward_score", ascending=False)
 
-    output = Path(args.output) / "grid_search_results.csv"
-    output.parent.mkdir(parents=True, exist_ok=True)
+    output = output_root / "grid_search_results.csv"
     results.to_csv(output, index=False)
     print("\n=== Top 10 by risk-reward score ===")
     print(results.head(10).to_string(index=False))
     print(f"\nSaved: {output}")
+    return 0
+
+
+def cmd_rolling(args) -> int:
+    market = MarketData(args.cache_dir)
+    tbill = market.tbill_rate(args.start, args.end)
+    cpi = market.cpi(args.start, args.end)
+    costs = _costs_from(args)
+    output_root = Path(args.output)
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    summaries, per_ticker, failed = [], {}, []
+    for ticker in args.tickers:
+        try:
+            prices = market.prices(ticker, args.start, args.end)
+            windows = rolling_dca(
+                prices, tbill, cpi, args.window, args.amount,
+                step_months=args.step, costs=costs,
+            )
+        except Exception as exc:
+            failed.append(ticker)
+            print(f"{ticker}: FAILED ({exc})", file=sys.stderr)
+            continue
+        if windows.empty:
+            failed.append(ticker)
+            print(f"{ticker}: no full {args.window}-year window in {args.start}-{args.end}",
+                  file=sys.stderr)
+            continue
+        per_ticker[ticker] = windows
+        summaries.append(summarize_windows(windows, label=ticker))
+        print(f"{ticker}: {len(windows)} windows")
+
+    if not summaries:
+        return 1
+
+    summary_df = pd.DataFrame(summaries).sort_values("median_xirr_pct", ascending=False)
+    print(f"\n=== {args.window}-year DCA outcomes across all start dates "
+          f"({args.start}-{args.end}, step {args.step}mo) ===")
+    print(summary_df.to_string(index=False))
+    print("\nColumns: median/p10/worst/best XIRR across windows; beat_tbills_pct / "
+          "beat_inflation_pct = share of windows that beat the benchmark.")
+
+    all_windows = pd.concat(
+        [w.assign(ticker=t) for t, w in per_ticker.items()], ignore_index=True
+    )
+    all_windows.to_csv(output_root / "rolling_windows.csv", index=False)
+    summary_df.to_csv(output_root / "rolling_summary.csv", index=False)
+    plots.rolling_xirr_chart(per_ticker, output_root / "rolling_xirr.png")
+    print(f"\nSaved: {output_root / 'rolling_summary.csv'}, rolling_windows.csv, rolling_xirr.png")
+    if failed:
+        print(f"Failed tickers: {', '.join(failed)}", file=sys.stderr)
     return 0
 
 
@@ -263,6 +382,15 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", "-o", default="./simulation_results",
                         help="output directory (default ./simulation_results)")
     parser.add_argument("--cache-dir", default=None, help="data cache directory")
+    parser.add_argument("--commission", type=float, default=0.0,
+                        help="commission per trade leg as a fraction, e.g. 0.001 = 0.1%% (default 0)")
+    parser.add_argument("--commission-fixed", type=float, default=0.0,
+                        help="fixed $ commission per trade leg (default 0)")
+    parser.add_argument("--annual-fee", type=float, default=0.0,
+                        help="annual fee drag as a fraction, e.g. 0.0075 = 0.75%%/yr (default 0)")
+    parser.add_argument("--cgt", type=float, default=0.0,
+                        help="capital gains tax on rebalance sales as a fraction, "
+                             "e.g. 0.18 = 18%% (default 0)")
 
 
 def _add_portfolio_options(parser: argparse.ArgumentParser) -> None:
@@ -299,14 +427,27 @@ def build_parser() -> argparse.ArgumentParser:
     _add_portfolio_options(p)
     p.set_defaults(func=cmd_portfolio)
 
-    p = sub.add_parser("grid", help="grid search over dynamic-portfolio hyperparameters")
+    p = sub.add_parser("grid", help="grid search over dynamic-portfolio hyperparameters "
+                                    "(walk-forward validated by default)")
     p.add_argument("--tickers", "-t", nargs="+", default=DEFAULT_TICKERS)
     _add_common(p)
     p.add_argument("--max-weight", type=float, default=0.4)
     p.add_argument("--lookback-grid", type=float, nargs="+", default=[2, 3, 4, 5])
     p.add_argument("--rebalance-grid", type=int, nargs="+", default=[1, 3, 6, 12])
     p.add_argument("--max-change-grid", type=float, nargs="+", default=[0.05, 0.10, 0.15, 0.20])
+    p.add_argument("--folds", type=int, default=3,
+                   help="walk-forward test folds; 0 = in-sample only (default 3)")
     p.set_defaults(func=cmd_grid)
+
+    p = sub.add_parser("rolling", help="rolling-window robustness: DCA outcome distribution "
+                                       "across all start dates")
+    p.add_argument("--tickers", "-t", nargs="+", default=DEFAULT_TICKERS)
+    _add_common(p)
+    p.add_argument("--window", "-w", type=float, default=5.0,
+                   help="window length in years (default 5)")
+    p.add_argument("--step", type=int, default=3,
+                   help="months between window starts (default 3)")
+    p.set_defaults(func=cmd_rolling)
 
     return parser
 

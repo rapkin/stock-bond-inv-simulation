@@ -36,10 +36,23 @@ open simulation_results/report.html
 | `invsim simulate -t QQQ -s 2020 -e 2025 -a 500` | DCA simulation of one ticker: dashboard chart, CSVs, risk metrics |
 | `invsim run -t "GSPC QQQ GLD TLT" ...` | Everything: per-ticker sims → comparison table → portfolio optimization → `report.html` |
 | `invsim portfolio --lookback 3 --rebalance 3 --max-weight 0.4 --max-change 0.10` | Dynamic vs static vs equal-weight portfolio comparison |
-| `invsim grid --lookback-grid 2 3 4 --rebalance-grid 1 3 6` | Hyperparameter grid search for the dynamic portfolio |
+| `invsim rolling -s 2010 -e 2025 --window 5 --step 3` | **Robustness**: DCA outcome distribution across *all* rolling start dates — median/worst XIRR, % of windows beating T-bills/inflation |
+| `invsim grid --lookback-grid 2 3 4 --rebalance-grid 1 3 6` | Hyperparameter search, **walk-forward validated** by default (`--folds 3`; `--folds 0` for raw in-sample) |
 
 Common options: `--start/-s`, `--end/-e` (years), `--amount/-a` ($ per 2 weeks),
 `--output/-o` (default `./simulation_results`), `--tickers/-t`.
+
+Trading costs (all default to 0, rates are fractions): `--commission 0.001`
+(0.1% per trade leg), `--commission-fixed 1` ($ per leg), `--annual-fee 0.0075`
+(0.75%/yr drag), `--cgt 0.18` (18% tax on gains realized at rebalances).
+
+### Why `rolling` and `--folds` matter
+
+A single backtest is one draw from history. On 2018–2025 gold looks like the
+best asset; across **all** 5-year windows since 2010 it beat inflation in only
+~41% of them. Likewise, hyperparameters tuned in-sample usually lose their edge
+on unseen data — `invsim grid` now tunes on a training span and scores on held-out
+folds, reporting the degradation and an equal-weight baseline honestly.
 
 Default tickers: `GSPC DJI IXIC QQQ` (US indices), `EZU EEM` (regions), `TLT`
 (bonds), `GLD` (gold), `VNQ` (REITs), `BTC-USD ETH-USD SOL-USD` (crypto).
@@ -68,12 +81,14 @@ masquerade as market gains. The money outcome is reported separately as **XIRR**
 invsim/
 ├── data.py        # Yahoo Finance + FRED access, per-year cache (raw data only)
 ├── schedule.py    # biweekly paydays aligned to next trading day
-├── simulation.py  # vectorized DCA engines + T-bill/inflation benchmarks
+├── simulation.py  # vectorized DCA engines, costs model, T-bill/inflation benchmarks
 ├── metrics.py     # TWR metrics, XIRR, drawdowns, risk-reward score
 ├── optimize.py    # max-Sharpe / min-variance weights, walk-forward optimizer
+├── robustness.py  # rolling-window outcome distributions
+├── validation.py  # walk-forward CV for hyperparameters
 ├── plots.py       # dashboards and portfolio charts
 ├── report.py      # self-contained HTML report
-└── cli.py         # invsim simulate | run | portfolio | grid
+└── cli.py         # invsim simulate | run | portfolio | rolling | grid
 tests/             # pytest suite (run: pytest)
 docs/METHODOLOGY.md    # formulas, assumptions, data sources
 docs/LEGACY_REVIEW.md  # what was wrong in the old scripts and what changed
@@ -90,6 +105,8 @@ legacy/                # previous implementation, kept for reference
 
 ## Limitations
 
-- No taxes, broker fees, or commissions (jurisdiction-dependent).
+- Costs are opt-in and simplified: flat commission per trade leg, a continuous
+  annual fee drag, and capital-gains tax only on rebalance sales (average-cost
+  basis, no final-liquidation tax). Dividend taxes are not modeled.
 - CPI and T-bill data are US-only.
 - Historical simulation only — nothing here predicts the future.
