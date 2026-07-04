@@ -1,0 +1,33 @@
+# Cost/tax profiles for invsim — edit here, no code changes needed.
+#
+# This file is picked up automatically when running invsim from this
+# directory (or pass --profiles-file). Entries ADD new profiles or OVERRIDE
+# same-named built-ins field by field. See `invsim profiles` for the result.
+#
+# All rates are fractions: 0.001 = 0.1%. Available fields:
+#   commission_pct         commission per trade leg, % of trade value
+#   commission_fixed       $ per trade leg
+#   commission_min         minimum $ per trade leg (e.g. IBKR $1/order)
+#   annual_fee_pct         continuous %/yr drag (advisory fee etc.)
+#   capital_gains_tax_pct  tax on gains realized at rebalances
+#   exit_tax_pct           tax on total gains at final liquidation (reported
+#                          as final_value_after_tax, not deducted mid-run)
+#   fx_fee_pct             currency conversion fee per contribution
+#   fx_fee_min             minimum $ conversion fee per contribution
+#
+# Built-ins (defined in invsim/profiles.py):
+#   none          zero costs
+#   ukraine-ibkr  IBKR fees + 18% PIT + 5% military levy = 23% on gains
+#   cyprus-ibkr   IBKR fees, no capital gains tax on securities
+#
+# Examples — uncomment and adjust:
+#
+# [ukraine-ibkr]                # tweak the built-in if tax rates change
+# capital_gains_tax_pct = 0.195
+# exit_tax_pct = 0.195
+#
+# [ukraine-ibkr-lite]           # variant: salary already in USD (no FX fees)
+# description = "Ukraine + IBKR, USD income"
+# commission_min = 1.0
+# capital_gains_tax_pct = 0.23
+# exit_tax_pct = 0.23

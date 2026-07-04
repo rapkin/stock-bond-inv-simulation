@@ -2,7 +2,7 @@
 name = "invsim"
 version = "1.0.0"
 description = "Biweekly DCA investment simulator with inflation adjustment and MPT portfolio optimization"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "yfinance>=0.2.28",
     "pandas>=2.0.0",

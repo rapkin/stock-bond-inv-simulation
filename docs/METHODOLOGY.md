@@ -119,9 +119,25 @@ The risk-free rate for optimization is the mean FRED T-bill rate over the period
 
 ## Trading costs (opt-in, default zero)
 
+Costs are bundled into named **profiles** (jurisdiction + broker), resolved
+from built-ins in `invsim/profiles.py` merged with the user's `profiles.toml`;
+CLI flags override individual fields. Built-in numbers are documented
+approximations (e.g. IBKR Fixed = $0.005/share min $1/order → modeled as a $1
+per-leg minimum; IBKR FX = 0.002% min $2 per conversion; Ukraine = 18% PIT +
+5% military levy on investment gains) — verify against current broker pricing
+and tax law, then pin your values in `profiles.toml`.
+
 - **Commission** — each asset bought or sold is one trade leg; a leg of gross
-  value `g` invests `g·(1 − pct) − fixed` (never negative). A portfolio buy
-  across N assets is N legs.
+  value `g` pays `max(g·pct + fixed, min)` (never leaving a negative net). A
+  portfolio buy across N assets is N legs.
+- **FX conversion** — charged once per contribution before splitting into
+  legs: `max(g·fx_pct, fx_min)`. Models converting a non-USD paycheck to the
+  trading currency.
+- **Exit tax** — an estimate of tax due on liquidating at the end:
+  `exit_tax × max(final − invested, 0)`, reported as `final_value_after_tax`
+  and never deducted from the running simulation. It ignores basis step-up
+  from gains already taxed at rebalances (slightly conservative) and any
+  loss-carryforward rules.
 - **Annual fee** (advisory fee, or the expense ratio of a raw index — note ETF
   adjusted closes already include their own expense ratio, don't double-count) —
   continuous ACT/365 drag. Implemented exactly by simulating against

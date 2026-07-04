@@ -42,9 +42,27 @@ open simulation_results/report.html
 Common options: `--start/-s`, `--end/-e` (years), `--amount/-a` ($ per 2 weeks),
 `--output/-o` (default `./simulation_results`), `--tickers/-t`.
 
-Trading costs (all default to 0, rates are fractions): `--commission 0.001`
-(0.1% per trade leg), `--commission-fixed 1` ($ per leg), `--annual-fee 0.0075`
-(0.75%/yr drag), `--cgt 0.18` (18% tax on gains realized at rebalances).
+### Costs & taxes: profiles
+
+Pick a jurisdiction+broker combination with one switch — no flag soup:
+
+```bash
+invsim run -p ukraine-ibkr ...    # IBKR fees + 23% tax on gains (18% PIT + 5% levy)
+invsim run -p cyprus-ibkr ...     # IBKR fees, no capital gains tax
+invsim profiles                   # list all available profiles
+```
+
+Profiles live in `invsim/profiles.py` (built-ins) and **`profiles.toml`**
+(yours — add new profiles or override built-in fields there; no code changes).
+Individual flags still override single fields: `-p ukraine-ibkr --cgt 0.195`.
+
+Modeled costs (all rates are fractions): per-leg commission
+(`commission_pct`/`_fixed`/`_min` — the $1 IBKR minimum is what actually bites
+at DCA order sizes), currency-conversion fees per contribution
+(`fx_fee_pct`/`_min` — for salaries not in USD), an annual fee drag
+(`annual_fee_pct`), capital-gains tax on rebalance sales
+(`capital_gains_tax_pct`), and an exit tax on final liquidation
+(`exit_tax_pct`, reported as the `final_value_after_tax` column).
 
 ### Why `rolling` and `--folds` matter
 

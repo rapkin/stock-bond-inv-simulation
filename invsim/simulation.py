@@ -32,26 +32,60 @@ from .optimize import walk_forward_weights
 
 @dataclass(frozen=True)
 class Costs:
-    """Trading costs. Rates are fractions: 0.001 = 0.1%."""
+    """Trading costs and taxes. Rates are fractions: 0.001 = 0.1%.
+
+    - ``commission_*`` apply per trade leg (each asset bought/sold is a leg;
+      ``commission_min`` models per-order minimums like IBKR's $1).
+    - ``fx_fee_*`` apply once per contribution — converting the paycheck
+      currency to the trading currency before buying.
+    - ``capital_gains_tax_pct`` is charged on gains realized at rebalances;
+      ``exit_tax_pct`` estimates the tax due on liquidating everything at the
+      end (reported as ``final_value_after_tax``, never deducted from the
+      running simulation).
+    """
 
     commission_pct: float = 0.0
     commission_fixed: float = 0.0
+    commission_min: float = 0.0
     annual_fee_pct: float = 0.0
     capital_gains_tax_pct: float = 0.0
-
-    def net_of_commission(self, gross):
-        """Amount actually invested from a gross trade leg (array-safe)."""
-        gross = np.asarray(gross, dtype=float)
-        net = np.where(
-            gross > 0, gross * (1.0 - self.commission_pct) - self.commission_fixed, 0.0
-        )
-        return np.maximum(net, 0.0)
+    exit_tax_pct: float = 0.0
+    fx_fee_pct: float = 0.0
+    fx_fee_min: float = 0.0
 
     def commission_on(self, trade_value: float) -> float:
         """Commission for one trade leg of ``trade_value`` dollars."""
         if trade_value <= 0:
             return 0.0
-        return trade_value * self.commission_pct + self.commission_fixed
+        return max(
+            trade_value * self.commission_pct + self.commission_fixed,
+            self.commission_min,
+        )
+
+    def net_of_commission(self, gross):
+        """Amount actually invested from a gross trade leg (array-safe)."""
+        gross = np.asarray(gross, dtype=float)
+        commission = np.maximum(
+            gross * self.commission_pct + self.commission_fixed, self.commission_min
+        )
+        return np.where(gross > 0, np.maximum(gross - commission, 0.0), 0.0)
+
+    def net_of_fx(self, gross):
+        """Contribution left after converting it to the trading currency."""
+        gross = np.asarray(gross, dtype=float)
+        if self.fx_fee_pct <= 0 and self.fx_fee_min <= 0:
+            return gross
+        fee = np.maximum(gross * self.fx_fee_pct, self.fx_fee_min)
+        return np.where(gross > 0, np.maximum(gross - fee, 0.0), 0.0)
+
+    def after_exit_tax(self, final_value: float, total_invested: float) -> float:
+        """Final value after liquidation tax on total gains.
+
+        Approximation: taxes ``final − invested`` even if some gains were
+        already taxed at rebalances (slightly conservative).
+        """
+        gain = max(final_value - total_invested, 0.0)
+        return final_value - self.exit_tax_pct * gain
 
 
 NO_COSTS = Costs()
@@ -74,7 +108,9 @@ def simulate_dca(
     """Buy ``net contribution / price`` shares on each contribution day."""
     effective = fee_adjusted(prices, costs.annual_fee_pct)
     flows = contributions.reindex(prices.index, fill_value=0.0)
-    net_flows = pd.Series(costs.net_of_commission(flows), index=prices.index)
+    net_flows = pd.Series(
+        costs.net_of_commission(costs.net_of_fx(flows)), index=prices.index
+    )
     shares = (net_flows / effective).cumsum()
     frame = pd.DataFrame(
         {
@@ -104,7 +140,7 @@ def simulate_portfolio(
     weights = weights / weights.sum()
     effective = fee_adjusted(prices, costs.annual_fee_pct)
     flows = contributions.reindex(prices.index, fill_value=0.0)
-    gross_legs = np.outer(flows.to_numpy(), weights.to_numpy())
+    gross_legs = np.outer(costs.net_of_fx(flows), weights.to_numpy())
     net_legs = pd.DataFrame(
         costs.net_of_commission(gross_legs), index=prices.index, columns=prices.columns
     )
@@ -189,7 +225,7 @@ def simulate_dynamic_portfolio(
             next_rebalance = next(rebalance_iter, (None, None))[0]
             events[day] = holdings.copy()
         if day in buys.index:
-            gross_legs = buys.loc[day] * np.asarray(current_weights)
+            gross_legs = float(costs.net_of_fx(buys.loc[day])) * np.asarray(current_weights)
             net_legs = costs.net_of_commission(gross_legs)
             holdings = holdings + net_legs / day_prices
             cost_basis = cost_basis + net_legs

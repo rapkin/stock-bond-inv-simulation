@@ -60,7 +60,7 @@ PCT_COLUMNS = {
     "annual_volatility_pct", "win_rate_pct", "var_95_pct", "cvar_95_pct",
     "best_month_pct", "worst_month_pct",
 }
-MONEY_COLUMNS = {"total_invested", "final_value"}
+MONEY_COLUMNS = {"total_invested", "final_value", "final_value_after_tax"}
 
 
 def _fmt(value, kind: str = "num") -> str:

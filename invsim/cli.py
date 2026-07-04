@@ -10,13 +10,14 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import itertools
 import sys
 from pathlib import Path
 
 import pandas as pd
 
-from . import plots, report
+from . import plots, profiles, report
 from .data import MarketData, align_monthly
 from .metrics import flow_adjusted_returns, performance_metrics
 from .optimize import optimize_weights
@@ -49,24 +50,49 @@ def _rf_series(market: MarketData, args) -> pd.Series:
     return market.tbill_rate(args.start, args.end)
 
 
+# CLI cost flags (default None = "not set") mapped to Costs fields; any flag
+# explicitly set overrides that single field of the selected --profile.
+_COST_FLAGS = {
+    "commission": "commission_pct",
+    "commission_fixed": "commission_fixed",
+    "commission_min": "commission_min",
+    "annual_fee": "annual_fee_pct",
+    "cgt": "capital_gains_tax_pct",
+    "exit_tax": "exit_tax_pct",
+    "fx_fee": "fx_fee_pct",
+    "fx_fee_min": "fx_fee_min",
+}
+
+
 def _costs_from(args) -> Costs:
-    return Costs(
-        commission_pct=args.commission,
-        commission_fixed=args.commission_fixed,
-        annual_fee_pct=args.annual_fee,
-        capital_gains_tax_pct=args.cgt,
-    )
+    costs = profiles.get_costs(args.profile, args.profiles_file)
+    overrides = {
+        field: getattr(args, flag)
+        for flag, field in _COST_FLAGS.items()
+        if getattr(args, flag) is not None
+    }
+    return dataclasses.replace(costs, **overrides) if overrides else costs
+
+
+def _apply_exit_tax(row: dict, costs: Costs) -> dict:
+    if row and costs.exit_tax_pct > 0:
+        row["final_value_after_tax"] = round(
+            costs.after_exit_tax(row["final_value"], row["total_invested"]), 2
+        )
+    return row
 
 
 def _simulate_one(market: MarketData, ticker: str, args, output_root: Path) -> dict:
     """Simulate one ticker; write dashboard + CSVs; return its metrics row."""
+    costs = _costs_from(args)
     prices = market.prices(ticker, args.start, args.end)
     contributions = contribution_schedule(prices.index, args.amount)
-    frame = simulate_dca(prices, contributions, _costs_from(args))
+    frame = simulate_dca(prices, contributions, costs)
     frame = add_benchmarks(frame, market.tbill_rate(args.start, args.end), market.cpi(args.start, args.end))
 
     rf = align_monthly(_rf_series(market, args), frame.index)
     row = performance_metrics(frame["value"], frame["invested"], contributions, rf, label=ticker)
+    row = _apply_exit_tax(row, costs)
 
     out_dir = output_root / _slug(ticker, args)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -215,6 +241,7 @@ def _run_portfolio(
         row = performance_metrics(
             frame["value"], frame["invested"], window_contributions, rf_daily, label=name
         )
+        row = _apply_exit_tax(row, costs)
         if row:
             rows.append(row)
 
@@ -404,6 +431,11 @@ def cmd_rolling(args) -> int:
     return 0
 
 
+def cmd_profiles(args) -> int:
+    print(profiles.describe_profiles(args.profiles_file))
+    return 0
+
+
 def _print_metrics_table(df: pd.DataFrame) -> None:
     columns = [c for c in df.columns if c not in ("start", "end")]
     with pd.option_context("display.max_columns", None, "display.width", None):
@@ -418,15 +450,26 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", "-o", default="./simulation_results",
                         help="output directory (default ./simulation_results)")
     parser.add_argument("--cache-dir", default=None, help="data cache directory")
-    parser.add_argument("--commission", type=float, default=0.0,
-                        help="commission per trade leg as a fraction, e.g. 0.001 = 0.1%% (default 0)")
-    parser.add_argument("--commission-fixed", type=float, default=0.0,
-                        help="fixed $ commission per trade leg (default 0)")
-    parser.add_argument("--annual-fee", type=float, default=0.0,
-                        help="annual fee drag as a fraction, e.g. 0.0075 = 0.75%%/yr (default 0)")
-    parser.add_argument("--cgt", type=float, default=0.0,
-                        help="capital gains tax on rebalance sales as a fraction, "
-                             "e.g. 0.18 = 18%% (default 0)")
+    parser.add_argument("--profile", "-p", default="none",
+                        help="cost/tax profile (see `invsim profiles`); default: none")
+    parser.add_argument("--profiles-file", default=None,
+                        help="TOML file with extra profiles (default: ./profiles.toml if present)")
+    parser.add_argument("--commission", type=float, default=None,
+                        help="override: commission per trade leg (fraction, 0.001 = 0.1%%)")
+    parser.add_argument("--commission-fixed", type=float, default=None,
+                        help="override: fixed $ commission per trade leg")
+    parser.add_argument("--commission-min", type=float, default=None,
+                        help="override: minimum $ commission per trade leg")
+    parser.add_argument("--annual-fee", type=float, default=None,
+                        help="override: annual fee drag (fraction, 0.0075 = 0.75%%/yr)")
+    parser.add_argument("--cgt", type=float, default=None,
+                        help="override: capital gains tax on rebalance sales (fraction)")
+    parser.add_argument("--exit-tax", type=float, default=None,
+                        help="override: tax on total gains at final liquidation (fraction)")
+    parser.add_argument("--fx-fee", type=float, default=None,
+                        help="override: currency-conversion fee per contribution (fraction)")
+    parser.add_argument("--fx-fee-min", type=float, default=None,
+                        help="override: minimum $ currency-conversion fee per contribution")
 
 
 def _add_portfolio_options(parser: argparse.ArgumentParser) -> None:
@@ -484,6 +527,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--step", type=int, default=3,
                    help="months between window starts (default 3)")
     p.set_defaults(func=cmd_rolling)
+
+    p = sub.add_parser("profiles", help="list available cost/tax profiles")
+    p.add_argument("--profiles-file", default=None,
+                   help="TOML file with extra profiles (default: ./profiles.toml if present)")
+    p.set_defaults(func=cmd_profiles)
 
     return parser
 
