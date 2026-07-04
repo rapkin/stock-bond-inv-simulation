@@ -18,7 +18,7 @@ import pandas as pd
 
 from . import plots, report
 from .data import MarketData, align_monthly
-from .metrics import performance_metrics
+from .metrics import flow_adjusted_returns, performance_metrics
 from .optimize import optimize_weights
 from .robustness import rolling_dca, summarize_windows
 from .schedule import contribution_schedule
@@ -73,7 +73,8 @@ def _simulate_one(market: MarketData, ticker: str, args, output_root: Path) -> d
     frame.to_csv(out_dir / "simulation_data.csv")
     if row:
         pd.DataFrame([row]).to_csv(out_dir / "metrics.csv", index=False)
-    plots.asset_dashboard(frame, ticker, out_dir / "dashboard.png")
+    returns = flow_adjusted_returns(frame["value"], contributions)
+    plots.tearsheet(frame, returns, rf, ticker, out_dir / "tearsheet.png")
     return row
 
 
@@ -94,13 +95,14 @@ def cmd_run(args) -> int:
     output_root = Path(args.output)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    rows, failed = [], []
+    rows, failed, asset_pages = [], [], {}
     for ticker in args.tickers:
         print(f"── Simulating {ticker} ...")
         try:
             row = _simulate_one(market, ticker, args, output_root)
             if row:
                 rows.append(row)
+                asset_pages[ticker] = f"{_slug(ticker, args)}/tearsheet.png"
         except Exception as exc:
             failed.append(ticker)
             print(f"   FAILED: {exc}", file=sys.stderr)
@@ -126,12 +128,35 @@ def cmd_run(args) -> int:
         except Exception as exc:
             print(f"   Portfolio step failed: {exc}", file=sys.stderr)
 
+        try:
+            asset_returns = (
+                market.price_matrix(usable, args.start, args.end).pct_change().dropna()
+            )
+            plots.correlation_heatmap(asset_returns, output_root / "correlation.png")
+        except Exception as exc:
+            print(f"   Correlation chart failed: {exc}", file=sys.stderr)
+
+    if comparison is not None:
+        points = [
+            {"label": r["label"], "annual_volatility_pct": r["annual_volatility_pct"],
+             "cagr_pct": r["cagr_pct"], "kind": "asset"}
+            for _, r in comparison.iterrows()
+        ]
+        if portfolio_metrics is not None:
+            points += [
+                {"label": r["label"], "annual_volatility_pct": r["annual_volatility_pct"],
+                 "cagr_pct": r["cagr_pct"], "kind": "strategy"}
+                for _, r in portfolio_metrics.iterrows()
+            ]
+        plots.risk_return_scatter(pd.DataFrame(points), output_root / "risk_return.png")
+
     report_path = report.generate_report(
         output_root,
         comparison,
         portfolio_metrics,
         weights,
         {"period": f"{args.start}–{args.end}", "amount": args.amount},
+        asset_pages=asset_pages,
     )
     print(f"\nReport: {report_path}")
     if failed:
@@ -183,14 +208,25 @@ def _run_portfolio(
     }
 
     rf_daily = align_monthly(tbill, prices.index)
-    rows = []
+    rows, strategy_returns = [], {}
     for name, frame in frames.items():
         frames[name] = frame = add_benchmarks(frame, tbill, cpi)
+        strategy_returns[name] = flow_adjusted_returns(frame["value"], window_contributions)
         row = performance_metrics(
             frame["value"], frame["invested"], window_contributions, rf_daily, label=name
         )
         if row:
             rows.append(row)
+
+    dynamic_name = "Dynamic (walk-forward)"
+    plots.tearsheet(
+        frames[dynamic_name],
+        strategy_returns[dynamic_name],
+        rf_daily,
+        "Dynamic portfolio",
+        output_root / "portfolio_tearsheet.png",
+    )
+    plots.strategy_drawdowns(strategy_returns, output_root / "strategy_drawdowns.png")
 
     weight_history.to_csv(output_root / "portfolio_weights.csv")
     baseline_weights.rename("weight").to_csv(output_root / "optimal_portfolio.csv")

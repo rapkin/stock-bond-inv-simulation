@@ -76,6 +76,65 @@ def max_drawdown(wealth_index: pd.Series) -> tuple[float, int]:
     return mdd, longest
 
 
+def drawdown_series(returns: pd.Series) -> pd.Series:
+    """Daily drawdown (underwater) series from flow-adjusted returns."""
+    wealth = (1.0 + returns).cumprod()
+    return wealth / wealth.cummax() - 1.0
+
+
+def rolling_sharpe(
+    returns: pd.Series, rf_annual: pd.Series | float = 0.0, window: int = 126
+) -> pd.Series:
+    """Rolling annualized Sharpe ratio over ``window`` observations (~6 months).
+
+    ``rf_annual`` is the ANNUAL risk-free rate (scalar or daily-aligned
+    series); it is converted to a per-day rate internally.
+    """
+    if not isinstance(rf_annual, pd.Series):
+        rf_annual = pd.Series(rf_annual, index=returns.index)
+    rf_daily = rf_annual.reindex(returns.index).ffill().bfill() / 252.0
+    excess = returns - rf_daily
+    mean = excess.rolling(window).mean()
+    std = excess.rolling(window).std(ddof=1)
+    return (mean / std) * np.sqrt(252)
+
+
+def rolling_volatility(returns: pd.Series, window: int = 126) -> pd.Series:
+    """Rolling annualized volatility (%) over ``window`` observations."""
+    return returns.rolling(window).std(ddof=1) * np.sqrt(252) * 100
+
+
+def var_cvar(returns: pd.Series, level: float = 0.95) -> tuple[float, float]:
+    """Historical daily (VaR, CVaR) at ``level``, as negative fractions.
+
+    VaR: the daily loss exceeded on (1-level) of days. CVaR (expected
+    shortfall): the average loss on those worst days — the industry-standard
+    tail-risk pair.
+    """
+    if len(returns) < 20:
+        return float("nan"), float("nan")
+    # Empirical order statistic ("lower") — the conservative convention.
+    var = float(returns.quantile(1.0 - level, interpolation="lower"))
+    tail = returns[returns <= var]
+    cvar = float(tail.mean()) if len(tail) else var
+    return var, cvar
+
+
+def monthly_returns(returns: pd.Series) -> pd.DataFrame:
+    """Calendar table of compounded monthly returns (rows=year, cols=1..12)."""
+    compounded = (1.0 + returns).groupby(
+        [returns.index.year, returns.index.month]
+    ).prod() - 1.0
+    table = compounded.unstack(level=1).reindex(columns=range(1, 13))
+    table.index.name = "year"
+    return table
+
+
+def yearly_returns(returns: pd.Series) -> pd.Series:
+    """Compounded return per calendar year."""
+    return (1.0 + returns).groupby(returns.index.year).prod() - 1.0
+
+
 def risk_reward_score(sortino: float, max_dd: float, total_return: float) -> float:
     """Heuristic combined score (kept from the legacy project, documented).
 
@@ -151,6 +210,9 @@ def performance_metrics(
     flows = pd.concat([flows, pd.Series([final_value], index=[value.index[-1]])])
     money_weighted = xirr(flows.groupby(level=0).sum())
 
+    var95, cvar95 = var_cvar(returns, 0.95)
+    by_month = monthly_returns(returns).stack().dropna()
+
     return {
         "label": label,
         "start": value.index[0].date().isoformat(),
@@ -165,6 +227,10 @@ def performance_metrics(
         "sortino_ratio": round(sortino, 3),
         "max_drawdown_pct": round(mdd * 100, 2),
         "calmar_ratio": round(calmar, 3),
+        "var_95_pct": round(var95 * 100, 2),
+        "cvar_95_pct": round(cvar95 * 100, 2),
+        "best_month_pct": round(float(by_month.max()) * 100, 2) if len(by_month) else None,
+        "worst_month_pct": round(float(by_month.min()) * 100, 2) if len(by_month) else None,
         "win_rate_pct": round(float((returns > 0).mean() * 100), 1),
         "max_underwater_days": underwater_days,
         "risk_reward_score": round(risk_reward_score(sortino, mdd, total_return), 3),

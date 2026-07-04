@@ -1,4 +1,10 @@
-"""Self-contained HTML report (inline CSS, base64-embedded charts)."""
+"""Self-contained HTML report (inline CSS, base64-embedded charts).
+
+Cross-asset charts are embedded base64 so the file is portable; the large
+per-asset tearsheets are referenced by relative path (they live next to the
+report inside the results directory) behind collapsible sections, so the
+report stays light while every asset still gets a full risk workup.
+"""
 
 from __future__ import annotations
 
@@ -10,30 +16,51 @@ from pathlib import Path
 import pandas as pd
 
 _CSS = """
-:root { --bg:#0f172a; --card:#1e293b; --text:#e2e8f0; --muted:#94a3b8;
-        --accent:#38bdf8; --good:#4ade80; --bad:#f87171; --border:#334155; }
+:root { --bg:#0d0d0d; --card:#1a1a19; --text:#ffffff; --muted:#898781;
+        --soft:#c3c2b7; --accent:#3987e5; --good:#0ca30c; --bad:#e66767;
+        --border:#383835; }
 * { box-sizing:border-box; margin:0; padding:0; }
-body { font-family:-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg);
-       color:var(--text); padding:2rem; max-width:1200px; margin:0 auto; }
-h1 { font-size:1.6rem; margin-bottom:.25rem; }
-h2 { font-size:1.15rem; margin:1.5rem 0 .75rem; color:var(--accent); }
+body { font-family:system-ui,-apple-system,'Segoe UI',sans-serif; background:var(--bg);
+       color:var(--soft); padding:2rem; max-width:1200px; margin:0 auto; }
+h1 { font-size:1.6rem; margin-bottom:.25rem; color:var(--text); }
+h2 { font-size:1.1rem; margin:2rem 0 .75rem; color:var(--text);
+     border-bottom:1px solid var(--border); padding-bottom:.4rem; }
 .muted { color:var(--muted); font-size:.85rem; }
-.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
-         gap:1rem; margin:1rem 0; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+         gap:1rem; margin:1.25rem 0; }
 .card { background:var(--card); border:1px solid var(--border); border-radius:10px;
-        padding:1rem; }
-.card .v { font-size:1.4rem; font-weight:700; margin-top:.25rem; }
+        padding:1rem 1.1rem; }
+.card .k { color:var(--muted); font-size:.78rem; text-transform:uppercase;
+           letter-spacing:.04em; }
+.card .v { font-size:1.55rem; font-weight:700; margin-top:.3rem; color:var(--text); }
+.card .s { color:var(--muted); font-size:.78rem; margin-top:.25rem; }
 .good { color:var(--good); } .bad { color:var(--bad); }
 .tablewrap { overflow-x:auto; background:var(--card); border:1px solid var(--border);
              border-radius:10px; }
-table { border-collapse:collapse; width:100%; font-size:.85rem; }
-th,td { padding:.5rem .75rem; text-align:right; white-space:nowrap; }
+table { border-collapse:collapse; width:100%; font-size:.83rem; }
+th,td { padding:.5rem .7rem; text-align:right; white-space:nowrap;
+        font-variant-numeric:tabular-nums; }
 th:first-child,td:first-child { text-align:left; }
-th { background:#0b1220; color:var(--muted); position:sticky; top:0; }
+th { background:#111110; color:var(--muted); position:sticky; top:0;
+     font-weight:600; }
 tr:nth-child(even) td { background:rgba(255,255,255,.02); }
-img { max-width:100%; border-radius:10px; margin:.5rem 0; }
+img { max-width:100%; border-radius:10px; margin:.5rem 0; display:block; }
+details { background:var(--card); border:1px solid var(--border); border-radius:10px;
+          margin:.5rem 0; }
+details summary { cursor:pointer; padding:.7rem 1rem; color:var(--text);
+                  font-weight:600; }
+details[open] summary { border-bottom:1px solid var(--border); }
+details .inner { padding: .75rem; }
 footer { margin-top:2rem; color:var(--muted); font-size:.8rem; }
+p.note { color:var(--muted); font-size:.82rem; margin:.5rem 0 0; }
 """
+
+PCT_COLUMNS = {
+    "total_return_pct", "xirr_pct", "cagr_pct", "max_drawdown_pct",
+    "annual_volatility_pct", "win_rate_pct", "var_95_pct", "cvar_95_pct",
+    "best_month_pct", "worst_month_pct",
+}
+MONEY_COLUMNS = {"total_invested", "final_value"}
 
 
 def _fmt(value, kind: str = "num") -> str:
@@ -49,16 +76,19 @@ def _fmt(value, kind: str = "num") -> str:
     return html.escape(str(value))
 
 
-def _table(df: pd.DataFrame, pct_cols: set[str] = frozenset(), money_cols: set[str] = frozenset()) -> str:
+def _table(df: pd.DataFrame) -> str:
     head = "".join(f"<th>{html.escape(str(c))}</th>" for c in df.columns)
     rows = []
     for _, row in df.iterrows():
         cells = []
         for col in df.columns:
-            kind = "pct" if col in pct_cols else "money" if col in money_cols else "num"
+            kind = "pct" if col in PCT_COLUMNS else "money" if col in MONEY_COLUMNS else "num"
             cells.append(f"<td>{_fmt(row[col], kind)}</td>")
         rows.append(f"<tr>{''.join(cells)}</tr>")
-    return f'<div class="tablewrap"><table><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    return (
+        f'<div class="tablewrap"><table><thead><tr>{head}</tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div>'
+    )
 
 
 def _embed_image(path: Path) -> str:
@@ -68,6 +98,50 @@ def _embed_image(path: Path) -> str:
     return f'<img src="data:image/png;base64,{encoded}" alt="{html.escape(path.stem)}">'
 
 
+def _tile(key: str, value: str, sub: str = "", cls: str = "") -> str:
+    sub_html = f'<div class="s">{sub}</div>' if sub else ""
+    return (
+        f'<div class="card"><div class="k">{html.escape(key)}</div>'
+        f'<div class="v {cls}">{value}</div>{sub_html}</div>'
+    )
+
+
+def _hero_tiles(headline: pd.Series, config: dict, n_assets: int) -> str:
+    """Stat tiles for the headline result (dynamic portfolio or best asset)."""
+    xirr = headline.get("xirr_pct")
+    tiles = [
+        _tile(
+            f"{headline['label']} — XIRR",
+            f"{xirr:+.1f}%/yr" if xirr is not None and pd.notna(xirr) else "—",
+            "money-weighted return of your dollars",
+            "good" if (xirr or 0) >= 0 else "bad",
+        ),
+        _tile(
+            "Final value",
+            f"${headline['final_value']:,.0f}",
+            f"from ${headline['total_invested']:,.0f} contributed",
+        ),
+        _tile(
+            "Max drawdown",
+            f"{headline['max_drawdown_pct']:.1f}%",
+            f"{headline['max_underwater_days']} days underwater at worst",
+            "bad",
+        ),
+        _tile(
+            "Sharpe / Sortino",
+            f"{headline['sharpe_ratio']:.2f} / {headline['sortino_ratio']:.2f}",
+            f"daily VaR95 {headline.get('var_95_pct', float('nan')):.1f}%, "
+            f"CVaR95 {headline.get('cvar_95_pct', float('nan')):.1f}%",
+        ),
+        _tile(
+            "Plan",
+            f"${config.get('amount', 0):,.0f} / 2wk",
+            f"{html.escape(str(config.get('period', '')))} · {n_assets} assets",
+        ),
+    ]
+    return f'<div class="cards">{"".join(tiles)}</div>'
+
+
 def generate_report(
     results_dir: Path,
     comparison: pd.DataFrame | None,
@@ -75,56 +149,69 @@ def generate_report(
     weights: pd.Series | None,
     config: dict,
     output_file: Path | None = None,
+    asset_pages: dict[str, str] | None = None,
 ) -> Path:
     """Assemble report.html from in-memory results and saved charts."""
     output_file = output_file or results_dir / "report.html"
-    pct_cols = {
-        "total_return_pct", "xirr_pct", "cagr_pct", "max_drawdown_pct",
-        "annual_volatility_pct", "win_rate_pct",
-    }
-    money_cols = {"total_invested", "final_value"}
-
     sections: list[str] = []
 
-    amount = config.get("amount", 0)
-    sections.append(
-        '<div class="cards">'
-        f'<div class="card"><div class="muted">Period</div><div class="v">{html.escape(str(config.get("period", "—")))}</div></div>'
-        f'<div class="card"><div class="muted">Contribution</div><div class="v">${amount:,.0f} / 2 weeks</div></div>'
-        f'<div class="card"><div class="muted">Assets</div><div class="v">{len(comparison) if comparison is not None else 0}</div></div>'
-        "</div>"
-    )
+    headline = None
+    if portfolio_metrics is not None and not portfolio_metrics.empty:
+        headline = portfolio_metrics.iloc[0]
+    elif comparison is not None and not comparison.empty:
+        headline = comparison.iloc[0]
+    if headline is not None:
+        n_assets = len(comparison) if comparison is not None else 0
+        sections.append(_hero_tiles(headline, config, n_assets))
 
-    if comparison is not None and not comparison.empty:
-        sections.append("<h2>Assets, ranked by risk-reward score</h2>")
-        sections.append(_table(comparison, pct_cols, money_cols))
+    if portfolio_metrics is not None and not portfolio_metrics.empty:
+        sections.append("<h2>Portfolio strategies</h2>")
+        sections.append(_table(portfolio_metrics))
         sections.append(
-            '<p class="muted">risk_reward_score = Sortino × √(1−|MaxDD|) × √(Return) '
-            "× suspicion penalty. Sharpe/Sortino/drawdown are computed on "
-            "flow-adjusted (time-weighted) returns; XIRR is the money-weighted "
-            "annual return of the actual contributions.</p>"
+            '<p class="note">All strategies invest the same contributions over the '
+            "same window (after the lookback warm-up). Static weights come from "
+            "warm-up data only — no look-ahead. Sharpe, Sortino, volatility, and "
+            "drawdowns use flow-adjusted (time-weighted) returns; XIRR is the "
+            "money-weighted annual return.</p>"
         )
+        for chart in ("portfolio_comparison.png", "strategy_drawdowns.png",
+                      "portfolio_weights.png"):
+            sections.append(_embed_image(results_dir / chart))
+        tearsheet = results_dir / "portfolio_tearsheet.png"
+        if tearsheet.exists():
+            sections.append(
+                "<details><summary>Dynamic portfolio — full tearsheet</summary>"
+                f'<div class="inner"><img src="{tearsheet.name}" loading="lazy" '
+                'alt="dynamic portfolio tearsheet"></div></details>'
+            )
 
     if weights is not None and len(weights):
         weights_df = pd.DataFrame(
             {"ticker": weights.index, "weight_pct": (weights * 100).round(1)}
         )
         sections.append("<h2>Baseline optimized weights (from warm-up window)</h2>")
-        sections.append(_table(weights_df, pct_cols=set()))
+        sections.append(_table(weights_df))
 
-    if portfolio_metrics is not None and not portfolio_metrics.empty:
-        sections.append("<h2>Portfolio strategies</h2>")
-        sections.append(_table(portfolio_metrics, pct_cols, money_cols))
+    if comparison is not None and not comparison.empty:
+        sections.append("<h2>Assets, ranked by risk-reward score</h2>")
+        sections.append(_table(comparison))
         sections.append(
-            '<p class="muted">All strategies invest over the same window (after the '
-            "lookback warm-up). Static weights are optimized only on warm-up data — "
-            "no look-ahead.</p>"
+            '<p class="note">risk_reward_score = Sortino × √(1−|MaxDD|) × √(Return) '
+            "× suspicion penalty — a heuristic ranking, see docs/METHODOLOGY.md. "
+            "VaR95/CVaR95: the daily loss exceeded on 5% of days, and the average "
+            "loss on those days.</p>"
         )
+        sections.append(_embed_image(results_dir / "risk_return.png"))
+        sections.append(_embed_image(results_dir / "correlation.png"))
 
-    for chart in ("portfolio_comparison.png", "portfolio_weights.png"):
-        image_html = _embed_image(results_dir / chart)
-        if image_html:
-            sections.append(image_html)
+        if asset_pages:
+            sections.append("<h2>Per-asset tearsheets</h2>")
+            for label, rel_path in asset_pages.items():
+                sections.append(
+                    f"<details><summary>{html.escape(label)}</summary>"
+                    f'<div class="inner"><img src="{html.escape(rel_path)}" '
+                    f'loading="lazy" alt="{html.escape(label)} tearsheet"></div></details>'
+                )
 
     document = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -136,7 +223,7 @@ def generate_report(
 inflation-adjusted · vs T-bills and cash</p>
 {''.join(sections)}
 <footer>invsim — analysis tool, not financial advice. Taxes, fees, and broker
-commissions are not modeled.</footer>
+commissions are modeled only if enabled via --commission/--annual-fee/--cgt.</footer>
 </body></html>"""
 
     output_file.write_text(document, encoding="utf-8")

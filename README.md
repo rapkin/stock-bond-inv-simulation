@@ -33,7 +33,7 @@ open simulation_results/report.html
 
 | Command | What it does |
 |---------|--------------|
-| `invsim simulate -t QQQ -s 2020 -e 2025 -a 500` | DCA simulation of one ticker: dashboard chart, CSVs, risk metrics |
+| `invsim simulate -t QQQ -s 2020 -e 2025 -a 500` | DCA simulation of one ticker: full tearsheet (drawdown, rolling Sharpe, monthly heatmap, VaR/CVaR), CSVs, risk metrics |
 | `invsim run -t "GSPC QQQ GLD TLT" ...` | Everything: per-ticker sims → comparison table → portfolio optimization → `report.html` |
 | `invsim portfolio --lookback 3 --rebalance 3 --max-weight 0.4 --max-change 0.10` | Dynamic vs static vs equal-weight portfolio comparison |
 | `invsim rolling -s 2010 -e 2025 --window 5 --step 3` | **Robustness**: DCA outcome distribution across *all* rolling start dates — median/worst XIRR, % of windows beating T-bills/inflation |
@@ -73,7 +73,15 @@ masquerade as market gains. The money outcome is reported separately as **XIRR**
 | `cagr_pct` | Time-weighted annual growth (market performance of the strategy) |
 | `annual_volatility_pct`, `sharpe_ratio`, `sortino_ratio` | Risk-adjusted quality, vs the real T-bill rate |
 | `max_drawdown_pct`, `max_underwater_days`, `calmar_ratio` | Worst-case pain |
+| `var_95_pct`, `cvar_95_pct` | Daily tail risk: the loss exceeded on 5% of days, and the average loss on those days |
+| `best_month_pct`, `worst_month_pct` | Range of monthly outcomes |
 | `risk_reward_score` | Combined heuristic ranking (see [docs/METHODOLOGY.md](docs/METHODOLOGY.md)) |
+
+`report.html` is a full tearsheet-style report: headline stat tiles, strategy
+comparison with underwater-drawdown chart, risk-vs-return map, correlation
+matrix, and a collapsible per-asset tearsheet (value vs benchmarks, drawdown,
+rolling Sharpe, monthly-return heatmap, return distribution with VaR/CVaR,
+yearly returns) for every simulated ticker.
 
 ## Project layout
 
